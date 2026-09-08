@@ -1,4 +1,4 @@
-import { Wheat, UserPlus } from 'lucide-react';
+import { Wheat } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { eventBus } from '@/game/EventBus';
 import { api } from '@/api/client';
@@ -24,13 +24,6 @@ export function FriendsBar() {
         {friends.map((f) => (
           <FriendAvatar key={f.userId} userId={f.userId} username={f.username} hasRipeCrops={f.hasRipeCrops} />
         ))}
-
-        <button
-          onClick={() => eventBus.emit('show-friends', undefined)}
-          className="glass flex-shrink-0 w-11 h-11 rounded-full flex items-center justify-center text-white/40 hover:text-white active:scale-90 transition-all"
-        >
-          <UserPlus size={16} />
-        </button>
       </div>
     </div>
   );
