@@ -1,23 +1,48 @@
-import { useState } from 'react';
+import { Component, useState } from 'react';
 import { Wallet, Settings, Zap, Coins } from 'lucide-react';
 import { useWeb3Modal } from '@web3modal/wagmi/react';
 import { useAccount } from 'wagmi';
 import { useGame } from '@/providers/GameProvider';
+import type { ReactNode } from 'react';
+
+class WalletErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() {
+    if (this.state.hasError) return (
+      <button className="glass rounded-xl p-1.5 text-white/40 pointer-events-none" disabled>
+        <Wallet size={13} />
+      </button>
+    );
+    return this.props.children;
+  }
+}
+
+function WalletButton() {
+  const { open } = useWeb3Modal();
+  const { address, isConnected } = useAccount();
+  const shortAddr = address ? `${address.slice(0, 4)}…${address.slice(-3)}` : null;
+  return (
+    <button
+      className={`pointer-events-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all active:scale-95 ${
+        isConnected ? 'glass-green text-green-300' : 'glass-purple text-violet-300'
+      }`}
+      onClick={() => open()}
+    >
+      <Wallet size={13} />
+      <span className="hidden sm:inline">{isConnected ? shortAddr : 'Connect'}</span>
+    </button>
+  );
+}
 
 export function HUD() {
   const { profile } = useGame();
-  const { open } = useWeb3Modal();
-  const { address, isConnected } = useAccount();
 
   if (!profile) return null;
 
   const energyPct = Math.min(100, (profile.energy / 100) * 100);
   const energyColor =
     energyPct > 50 ? 'bg-green-400' : energyPct > 20 ? 'bg-amber-400' : 'bg-red-400';
-
-  const shortAddr = address
-    ? `${address.slice(0, 4)}…${address.slice(-3)}`
-    : null;
 
   // XP / level mock (trust_score used as level proxy)
   const level = Math.max(1, Math.floor(profile.trustScore / 10));
@@ -78,19 +103,9 @@ export function HUD() {
         <div className="flex-1" />
 
         {/* Wallet button — pointer-events-auto */}
-        <button
-          className={`pointer-events-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all active:scale-95 ${
-            isConnected
-              ? 'glass-green text-green-300'
-              : 'glass-purple text-violet-300'
-          }`}
-          onClick={() => open()}
-        >
-          <Wallet size={13} />
-          <span className="hidden sm:inline">
-            {isConnected ? shortAddr : 'Connect'}
-          </span>
-        </button>
+        <WalletErrorBoundary>
+          <WalletButton />
+        </WalletErrorBoundary>
 
         {/* Settings */}
         <button className="pointer-events-auto glass rounded-xl p-1.5 text-white/60 hover:text-white active:scale-95 transition-all">

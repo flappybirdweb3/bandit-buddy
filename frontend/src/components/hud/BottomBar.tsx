@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { MousePointer2, Shovel, Sprout, Droplets, Bug, Hand, Users, Trophy, Gem } from 'lucide-react';
 import { ClaimModal } from '@/components/modals/ClaimModal';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useGame } from '@/providers/GameProvider';
 import { eventBus } from '@/game/EventBus';
 
@@ -105,7 +106,11 @@ export function BottomBar({ onShowFriends }: Props) {
         </div>
       </div>
 
-      {showClaim && <ClaimModal onClose={() => setShowClaim(false)} />}
+      {showClaim && (
+        <ErrorBoundary>
+          <ClaimModal onClose={() => setShowClaim(false)} />
+        </ErrorBoundary>
+      )}
     </>
   );
 }
