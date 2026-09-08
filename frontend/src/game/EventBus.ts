@@ -9,6 +9,7 @@ type EventMap = {
   'visit-farm': { userId: string; username: string };
   'back-to-my-farm': void;
   'steal-animation': { success: boolean; plotIndex: number };
+  'tool-changed': string;
 };
 
 type EventCallback<T> = (data: T) => void;

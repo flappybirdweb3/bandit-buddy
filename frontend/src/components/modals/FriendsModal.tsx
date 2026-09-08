@@ -1,31 +1,29 @@
 import { useState } from 'react';
+import { X, Wheat, UserPlus, ArrowLeft, Hand, DoorOpen } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { Modal } from '@/components/ui/Modal';
-import { Button } from '@/components/ui/Button';
 import { api } from '@/api/client';
 import { eventBus } from '@/game/EventBus';
 import type { FarmData } from '@/types/game.types';
-import WebApp from '@twa-dev/sdk';
 
-interface Props {
-  onClose: () => void;
-}
+interface Props { onClose: () => void }
 
-// Telegram provides friends who have also opened our bot
-const getMockFriends = () => [
+const MOCK_FRIENDS = [
   { id: 'u1', username: 'alice_farmer', hasRipeCrops: true },
   { id: 'u2', username: 'bob_thief', hasRipeCrops: false },
   { id: 'u3', username: 'charlie_grower', hasRipeCrops: true },
 ];
 
-export function FriendsModal({ onClose }: Props) {
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
-  const [selectedUsername, setSelectedUsername] = useState<string>('');
+const SEED_EMOJI: Record<string, string> = {
+  wheat: '🌾', carrot: '🥕', corn: '🌽', tomato: '🍅', pumpkin: '🎃',
+};
 
-  const { data: friendFarm, isLoading: loadingFarm } = useQuery({
-    queryKey: ['friendFarm', selectedUserId],
-    queryFn: () => api.getFarm(selectedUserId!),
-    enabled: !!selectedUserId,
+export function FriendsModal({ onClose }: Props) {
+  const [selected, setSelected] = useState<{ id: string; name: string } | null>(null);
+
+  const { data: farm, isLoading } = useQuery({
+    queryKey: ['friendFarm', selected?.id],
+    queryFn: () => api.getFarm(selected!.id),
+    enabled: !!selected,
   });
 
   const handleVisit = (userId: string, username: string) => {
@@ -33,166 +31,157 @@ export function FriendsModal({ onClose }: Props) {
     onClose();
   };
 
-  const friends = getMockFriends();
-
   return (
-    <Modal title="👥 Friends' Farms" onClose={onClose} maxWidth={400}>
-      {!selectedUserId ? (
-        <FriendsList
-          friends={friends}
-          onPreview={(id, name) => { setSelectedUserId(id); setSelectedUsername(name); }}
-          onVisit={handleVisit}
-        />
-      ) : (
-        <FarmPreview
-          userId={selectedUserId}
-          username={selectedUsername}
-          farm={friendFarm}
-          loading={loadingFarm}
-          onVisit={() => handleVisit(selectedUserId, selectedUsername)}
-          onBack={() => setSelectedUserId(null)}
-        />
-      )}
-    </Modal>
-  );
-}
+    <div className="fixed inset-0 z-[100] flex items-end justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div
+        className="relative w-full max-w-md glass rounded-t-3xl slide-up p-5 pb-10"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="w-10 h-1 bg-white/20 rounded-full mx-auto mb-4" />
 
-function FriendsList({ friends, onPreview, onVisit }: {
-  friends: { id: string; username: string; hasRipeCrops: boolean }[];
-  onPreview: (id: string, name: string) => void;
-  onVisit: (id: string, name: string) => void;
-}) {
-  return (
-    <div>
-      <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13, marginBottom: 12 }}>
-        Friends playing Barn Buddy
-      </p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {friends.map((f) => (
-          <div
-            key={f.id}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 12,
-              background: 'rgba(255,255,255,0.07)', borderRadius: 12,
-              padding: '10px 14px',
-              border: f.hasRipeCrops ? '1px solid rgba(255,215,0,0.3)' : '1px solid transparent',
-            }}
-          >
-            <div style={{
-              width: 40, height: 40, borderRadius: '50%',
-              background: 'linear-gradient(135deg, #43a047, #1b5e20)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 18, flexShrink: 0,
-            }}>
-              👤
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ color: '#fff', fontWeight: 600, fontSize: 14 }}>@{f.username}</div>
-              {f.hasRipeCrops && (
-                <div style={{ color: '#ffd700', fontSize: 11, marginTop: 2 }}>
-                  🌾 Has ripe crops!
-                </div>
-              )}
-            </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <Button
-                variant="ghost"
-                onClick={() => onPreview(f.id, f.username)}
-                style={{ padding: '6px 10px', fontSize: 12 }}
-              >
-                👁 Preview
-              </Button>
-              <Button
-                variant={f.hasRipeCrops ? 'danger' : 'primary'}
-                onClick={() => onVisit(f.id, f.username)}
-                style={{ padding: '6px 10px', fontSize: 12 }}
-              >
-                {f.hasRipeCrops ? '🥷 Steal' : '🚪 Visit'}
-              </Button>
+        {/* Header */}
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-2">
+            {selected && (
+              <button onClick={() => setSelected(null)} className="glass rounded-full p-1.5 text-white/60 hover:text-white active:scale-90 mr-1">
+                <ArrowLeft size={15} />
+              </button>
+            )}
+            <div>
+              <h2 className="text-white font-black text-base leading-none">
+                {selected ? `@${selected.name}'s Farm` : "Friends' Farms"}
+              </h2>
+              <p className="text-white/40 text-xs">
+                {selected ? 'Preview & raid' : 'Bandit Buddy network'}
+              </p>
             </div>
           </div>
-        ))}
-      </div>
+          <button onClick={onClose} className="glass rounded-full p-2 text-white/60 hover:text-white active:scale-90 transition-all">
+            <X size={16} />
+          </button>
+        </div>
 
-      <button
-        onClick={() => WebApp.openTelegramLink(`https://t.me/barnbuddybot?startgroup=1`)}
-        style={{
-          width: '100%', marginTop: 14, background: 'rgba(255,255,255,0.05)',
-          border: '1px dashed rgba(255,255,255,0.2)', borderRadius: 12,
-          color: 'rgba(255,255,255,0.5)', padding: '10px', cursor: 'pointer', fontSize: 13,
-        }}
-      >
-        + Invite more friends
-      </button>
+        {!selected ? (
+          /* Friends list */
+          <div className="flex flex-col gap-2.5 max-h-80 overflow-y-auto pr-1">
+            {MOCK_FRIENDS.map((f) => (
+              <div
+                key={f.id}
+                className={`glass rounded-2xl flex items-center gap-3 p-3 ${f.hasRipeCrops ? 'border-amber-400/30' : ''}`}
+              >
+                {/* Avatar */}
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-violet-500 to-purple-700 flex items-center justify-center text-white font-bold flex-shrink-0">
+                  {f.username[0].toUpperCase()}
+                </div>
+
+                <div className="flex-1 min-w-0">
+                  <div className="text-white font-bold text-sm">@{f.username}</div>
+                  {f.hasRipeCrops
+                    ? <div className="text-amber-400 text-[10px] flex items-center gap-1 mt-0.5"><Wheat size={9} /> Ripe crops!</div>
+                    : <div className="text-white/30 text-[10px] mt-0.5">Nothing to steal</div>}
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setSelected({ id: f.id, name: f.username })}
+                    className="glass text-white/60 text-xs font-semibold px-2.5 py-1.5 rounded-xl active:scale-90 transition-all"
+                  >
+                    View
+                  </button>
+                  <button
+                    onClick={() => handleVisit(f.id, f.username)}
+                    className={`text-xs font-bold px-2.5 py-1.5 rounded-xl active:scale-90 transition-all ${f.hasRipeCrops ? 'glass-red text-red-300' : 'glass-green text-green-300'}`}
+                  >
+                    {f.hasRipeCrops ? '🥷 Steal' : '🚪 Visit'}
+                  </button>
+                </div>
+              </div>
+            ))}
+
+            {/* Invite */}
+            <button className="glass rounded-2xl flex items-center justify-center gap-2 p-3 text-white/40 hover:text-white/60 active:scale-95 transition-all border-dashed">
+              <UserPlus size={16} />
+              <span className="text-sm font-semibold">Invite Friends</span>
+            </button>
+          </div>
+        ) : (
+          /* Farm preview */
+          <FarmPreview
+            farm={farm}
+            loading={isLoading}
+            username={selected.name}
+            onVisit={() => handleVisit(selected.id, selected.name)}
+          />
+        )}
+      </div>
     </div>
   );
 }
 
-function FarmPreview({ userId, username, farm, loading, onVisit, onBack }: {
-  userId: string; username: string; farm?: FarmData;
-  loading: boolean; onVisit: () => void; onBack: () => void;
+function FarmPreview({ farm, loading, username, onVisit }: {
+  farm?: FarmData; loading: boolean; username: string; onVisit: () => void;
 }) {
   if (loading) {
     return (
-      <div style={{ textAlign: 'center', padding: '30px 0', color: 'rgba(255,255,255,0.5)' }}>
-        Loading {username}'s farm...
-      </div>
+      <div className="text-center py-10 text-white/40 text-sm">Loading {username}'s farm…</div>
     );
   }
 
   const ripePlots = farm?.plots.filter((p) => !p.isEmpty && p.isRipe && p.stealableRemaining > 0) ?? [];
+  const totalStealable = ripePlots.reduce((s, p) => s + p.stealableRemaining, 0);
 
   return (
     <div>
-      <button
-        onClick={onBack}
-        style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.6)', cursor: 'pointer', marginBottom: 12 }}
-      >
-        ← Back to friends
-      </button>
-      <h4 style={{ color: '#fff', marginBottom: 12 }}>🏡 @{username}'s Farm</h4>
-
       {ripePlots.length > 0 ? (
-        <div style={{
-          background: 'rgba(255,87,34,0.1)', border: '1px solid rgba(255,87,34,0.3)',
-          borderRadius: 10, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: '#ff8a65',
-        }}>
-          🌾 {ripePlots.length} ripe crop{ripePlots.length > 1 ? 's' : ''} ready to steal!
-          ({ripePlots.reduce((s, p) => s + p.stealableRemaining, 0).toFixed(1)} G max)
+        <div className="glass-red rounded-2xl p-3 mb-4 flex items-center gap-2">
+          <Hand size={16} className="text-red-400 flex-shrink-0" />
+          <span className="text-red-300 text-sm">
+            <strong>{ripePlots.length} ripe plot{ripePlots.length > 1 ? 's' : ''}</strong> — up to <strong>{totalStealable.toFixed(1)}G</strong> stealable
+          </span>
         </div>
       ) : (
-        <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13, marginBottom: 14 }}>
-          No stealable crops right now.
+        <div className="glass rounded-2xl p-3 mb-4 text-white/40 text-sm text-center">
+          No crops to steal right now.
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 16 }}>
-        {(farm?.plots ?? []).map((p) => (
+      {/* Plot grid */}
+      <div className="grid grid-cols-3 gap-2 mb-5">
+        {(farm?.plots ?? Array(6).fill(null)).map((p, i) => (
           <div
-            key={p.id}
-            style={{
-              background: p.isEmpty ? 'rgba(139,94,60,0.4)' :
-                p.isRipe ? 'rgba(255,193,7,0.2)' : 'rgba(76,175,80,0.2)',
-              border: p.isRipe && !p.isEmpty ? '1px solid rgba(255,193,7,0.5)' : '1px solid rgba(255,255,255,0.1)',
-              borderRadius: 8, padding: '8px', textAlign: 'center', fontSize: 12,
-            }}
+            key={p?.id ?? i}
+            className={`rounded-xl p-2.5 text-center ${
+              !p || p.isEmpty ? 'bg-amber-900/30' :
+              p.isRipe ? 'bg-amber-400/15 border border-amber-400/40' :
+              'bg-green-900/30'
+            }`}
           >
-            <div style={{ fontSize: 20 }}>
-              {p.isEmpty ? '🟫' : p.isRipe ? '✨🌾' : '🌱'}
+            <div className="text-2xl mb-1">
+              {!p || p.isEmpty ? '🟫' : p.isRipe ? SEED_EMOJI[p.seed?.iconKey ?? ''] ?? '✨' : '🌱'}
             </div>
-            <div style={{ color: 'rgba(255,255,255,0.6)', marginTop: 2 }}>
-              {p.isEmpty ? 'Empty' : p.seed?.name}
+            <div className="text-white/50 text-[10px]">
+              {!p || p.isEmpty ? 'Empty' : p.seed?.name}
             </div>
-            {!p.isEmpty && p.isRipe && (
-              <div style={{ color: '#76ff03', fontSize: 10 }}>Ripe!</div>
+            {p && !p.isEmpty && p.isRipe && (
+              <div className="text-amber-400 text-[9px] font-bold">RIPE</div>
             )}
           </div>
         ))}
       </div>
 
-      <Button fullWidth variant={ripePlots.length > 0 ? 'danger' : 'primary'} onClick={onVisit}>
-        {ripePlots.length > 0 ? '🥷 Enter & Steal' : '🚪 Visit Farm'}
-      </Button>
+      <button
+        onClick={onVisit}
+        className={`w-full py-4 rounded-2xl font-black text-sm active:scale-95 transition-all flex items-center justify-center gap-2 ${
+          ripePlots.length > 0
+            ? 'bg-gradient-to-r from-red-600 to-rose-500 text-white tool-steal-glow'
+            : 'glass text-white'
+        }`}
+      >
+        {ripePlots.length > 0
+          ? <><Hand size={16} /> Enter & Steal</>
+          : <><DoorOpen size={16} /> Visit Farm</>}
+      </button>
     </div>
   );
 }

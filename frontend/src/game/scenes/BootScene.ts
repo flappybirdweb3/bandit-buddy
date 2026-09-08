@@ -13,7 +13,7 @@ export class BootScene extends Phaser.Scene {
     const bar = this.add.rectangle(width / 2 - 150, height / 2, 0, 16, 0x4caf50);
     bar.setOrigin(0, 0.5);
 
-    this.add.text(width / 2, height / 2 - 40, '🌾 Barn Buddy', {
+    this.add.text(width / 2, height / 2 - 40, '🥷 Bandit Buddy', {
       fontSize: '28px', color: '#ffffff', fontStyle: 'bold',
     }).setOrigin(0.5);
 

@@ -4,13 +4,15 @@ import { GameCanvas } from '@/game/GameCanvas';
 import { eventBus } from '@/game/EventBus';
 import { HUD } from '@/components/hud/HUD';
 import { BottomBar } from '@/components/hud/BottomBar';
+import { FriendsBar } from '@/components/hud/FriendsBar';
 import { SeedSelectModal } from '@/components/modals/SeedSelectModal';
 import { HarvestModal } from '@/components/modals/HarvestModal';
 import { StealModal } from '@/components/modals/StealModal';
 import { FriendsModal } from '@/components/modals/FriendsModal';
 import { useGame } from '@/providers/GameProvider';
 import { api } from '@/api/client';
-import type { PlotClickEvent, FarmData } from '@/types/game.types';
+import { ArrowLeft } from 'lucide-react';
+import type { PlotClickEvent, FarmData, TelegramFriend } from '@/types/game.types';
 
 type ActiveModal =
   | { type: 'seed'; plotId: string }
@@ -19,26 +21,28 @@ type ActiveModal =
   | { type: 'friends' }
   | null;
 
+// Mock friends — real implementation reads from Telegram contacts
+const MOCK_FRIENDS: TelegramFriend[] = [
+  { id: 111112, username: 'alice_farmer', firstName: 'Alice', hasRipeCrops: true, userId: 'u1' },
+  { id: 111113, username: 'bob_thief',    firstName: 'Bob',   hasRipeCrops: false },
+  { id: 111114, username: 'charlie_grower', firstName: 'Charlie', hasRipeCrops: true, userId: 'u3' },
+];
+
 export function App() {
   const [modal, setModal] = useState<ActiveModal>(null);
   const [visitState, setVisitState] = useState<{ userId: string; username: string } | null>(null);
   const { myFarm } = useGame();
 
-  // When visiting a friend, fetch their farm
   const { data: friendFarm } = useQuery({
     queryKey: ['friendFarm', visitState?.userId],
     queryFn: () => api.getFarm(visitState!.userId),
     enabled: !!visitState,
   });
 
-  // Push friend farm to Phaser when available
   useEffect(() => {
-    if (friendFarm && visitState) {
-      eventBus.emit('farm-updated', friendFarm);
-    }
+    if (friendFarm && visitState) eventBus.emit('farm-updated', friendFarm);
   }, [friendFarm, visitState]);
 
-  // Return to own farm
   const returnToOwnFarm = useCallback(() => {
     setVisitState(null);
     if (myFarm) eventBus.emit('farm-updated', myFarm);
@@ -55,28 +59,17 @@ export function App() {
       } else if (ev.action === 'harvest') {
         setModal({ type: 'harvest', plotIndex: ev.plotIndex });
       } else if (ev.action === 'steal' && visitState) {
-        setModal({
-          type: 'steal',
-          plotId: ev.plotId,
-          plotIndex: ev.plotIndex,
-          targetUserId: visitState.userId,
-          targetUsername: visitState.username,
-        });
+        setModal({ type: 'steal', plotId: ev.plotId, plotIndex: ev.plotIndex,
+          targetUserId: visitState.userId, targetUsername: visitState.username });
       }
     });
 
-    const unsubFriends = eventBus.on('show-friends', () => {
-      setModal({ type: 'friends' });
-    });
-
-    const unsubVisit = eventBus.on('visit-farm', ({ userId, username }) => {
+    const unsubFriends = eventBus.on('show-friends', () => setModal({ type: 'friends' }));
+    const unsubVisit  = eventBus.on('visit-farm', ({ userId, username }) => {
       setVisitState({ userId, username });
       setModal(null);
     });
-
-    const unsubBack = eventBus.on('back-to-my-farm', () => {
-      returnToOwnFarm();
-    });
+    const unsubBack = eventBus.on('back-to-my-farm', () => returnToOwnFarm());
 
     return () => { unsubPlot(); unsubFriends(); unsubVisit(); unsubBack(); };
   }, [myFarm, friendFarm, visitState, returnToOwnFarm]);
@@ -84,27 +77,33 @@ export function App() {
   const activeFarm = visitState ? friendFarm : myFarm;
 
   return (
-    <>
-      {/* Phaser canvas - full screen background layer */}
+    <div className="h-screen w-full relative overflow-hidden bg-black">
+      {/* ── Phaser canvas (full-screen background) ── */}
       <GameCanvas />
 
-      {/* React UI overlays */}
+      {/* ── Top HUD ── */}
       <HUD />
 
+      {/* ── Visit banner ── */}
       {visitState && (
-        <div style={{
-          position: 'fixed', top: 52, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 50, background: 'rgba(198,40,40,0.85)', borderRadius: 20,
-          padding: '5px 16px', fontSize: 13, color: '#fff', fontWeight: 600,
-          border: '1px solid rgba(255,255,255,0.2)',
-        }}>
-          🥷 Raiding @{visitState.username}'s farm
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 pointer-events-auto">
+          <button
+            onClick={returnToOwnFarm}
+            className="glass-red rounded-full flex items-center gap-2 px-4 py-2 text-red-300 text-sm font-bold active:scale-95 transition-all"
+          >
+            <ArrowLeft size={14} />
+            Raiding @{visitState.username}
+          </button>
         </div>
       )}
 
+      {/* ── Friends bar (above bottom bar) ── */}
+      <FriendsBar friends={MOCK_FRIENDS} />
+
+      {/* ── Bottom toolbar + nav ── */}
       <BottomBar onShowFriends={() => setModal({ type: 'friends' })} />
 
-      {/* Modals */}
+      {/* ── Modals ── */}
       {modal?.type === 'seed' && (
         <SeedSelectModal plotId={modal.plotId} onClose={() => setModal(null)} />
       )}
@@ -129,6 +128,6 @@ export function App() {
       {modal?.type === 'friends' && (
         <FriendsModal onClose={() => setModal(null)} />
       )}
-    </>
+    </div>
   );
 }

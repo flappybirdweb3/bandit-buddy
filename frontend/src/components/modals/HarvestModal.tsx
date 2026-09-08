@@ -1,78 +1,85 @@
-import { Modal } from '@/components/ui/Modal';
-import { Button } from '@/components/ui/Button';
+import { X, Coins, ShieldAlert } from 'lucide-react';
 import { useHarvest } from '@/hooks/usePlotActions';
 import type { FarmPlot } from '@/types/game.types';
 
-interface Props {
-  plot: FarmPlot;
-  onClose: () => void;
-}
+interface Props { plot: FarmPlot; onClose: () => void }
+
+const SEED_EMOJI: Record<string, string> = {
+  wheat: '🌾', carrot: '🥕', corn: '🌽', tomato: '🍅', pumpkin: '🎃',
+};
 
 export function HarvestModal({ plot, onClose }: Props) {
   const harvest = useHarvest();
 
-  const handleHarvest = async () => {
-    try {
-      await harvest.mutateAsync(plot.id);
-      onClose();
-    } catch {}
-  };
-
-  const netYield = plot.seed
-    ? Math.max(0, plot.seed.baseYield - plot.totalStolen)
+  const netYield = plot.seed ? Math.max(0, plot.seed.baseYield - plot.totalStolen) : 0;
+  const emoji = plot.seed ? (SEED_EMOJI[plot.seed.iconKey] ?? '🌿') : '🌿';
+  const stolenPct = plot.seed
+    ? Math.round((plot.totalStolen / plot.seed.baseYield) * 100)
     : 0;
 
+  const handleHarvest = async () => {
+    await harvest.mutateAsync(plot.id);
+    onClose();
+  };
+
   return (
-    <Modal title="🌾 Ready to Harvest!" onClose={onClose}>
-      <div style={{ textAlign: 'center', padding: '10px 0 20px' }}>
-        <div style={{ fontSize: 56, marginBottom: 8 }}>
-          {plot.seed?.name === 'Wheat' ? '🌾' : plot.seed?.name === 'Carrot' ? '🥕' :
-           plot.seed?.name === 'Corn' ? '🌽' : plot.seed?.name === 'Tomato' ? '🍅' :
-           plot.seed?.name === 'Pumpkin' ? '🎃' : '🌿'}
+    <div className="fixed inset-0 z-[100] flex items-end justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div
+        className="relative w-full max-w-md glass rounded-t-3xl slide-up p-5 pb-10 text-center"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="w-10 h-1 bg-white/20 rounded-full mx-auto mb-4" />
+
+        <button onClick={onClose} className="absolute top-4 right-4 glass rounded-full p-2 text-white/60 hover:text-white active:scale-90 transition-all">
+          <X size={16} />
+        </button>
+
+        {/* Crop */}
+        <div className="text-6xl mb-2">{emoji}</div>
+        <h2 className="text-white font-black text-xl mb-1">{plot.seed?.name}</h2>
+        <p className="text-white/40 text-xs mb-5">Ready to harvest!</p>
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 gap-3 mb-5">
+          <div className="glass-gold rounded-2xl p-3">
+            <div className="text-amber-300 font-black text-xl">+{plot.seed?.baseYield.toFixed(0)}</div>
+            <div className="text-white/40 text-[10px] mt-0.5">Full Yield (G)</div>
+          </div>
+          <div className="glass-red rounded-2xl p-3">
+            <div className="text-red-400 font-black text-xl">-{plot.totalStolen.toFixed(0)}</div>
+            <div className="text-white/40 text-[10px] mt-0.5">Stolen ({stolenPct}%)</div>
+          </div>
         </div>
 
-        <h3 style={{ color: '#fff', margin: '0 0 16px', fontSize: 20 }}>
-          {plot.seed?.name}
-        </h3>
-
-        <div style={{
-          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 20,
-        }}>
-          <StatCard label="Full Yield" value={`+${plot.seed?.baseYield.toFixed(0)} G`} color="#ffd700" />
-          <StatCard label="Stolen" value={`-${plot.totalStolen.toFixed(0)} G`} color="#ff5722" />
-          <StatCard label="You Earn" value={`+${netYield.toFixed(0)} G`} color="#76ff03" large />
+        {/* Net yield highlight */}
+        <div className="glass-green rounded-2xl py-4 px-6 mb-5 flex items-center justify-center gap-3">
+          <Coins size={20} className="text-amber-400" />
+          <div>
+            <div className="text-green-400 font-black text-3xl leading-none">+{netYield.toFixed(0)}</div>
+            <div className="text-white/40 text-xs mt-0.5">GOLD you receive</div>
+          </div>
         </div>
 
         {plot.totalStolen > 0 && (
-          <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12, marginBottom: 16 }}>
-            🐾 Thieves stole {plot.totalStolen.toFixed(0)} GOLD from this crop
-          </p>
+          <div className="flex items-center justify-center gap-1.5 text-white/40 text-xs mb-5">
+            <ShieldAlert size={12} className="text-red-400" />
+            Thieves stole {plot.totalStolen.toFixed(0)} GOLD — get guard dogs next time!
+          </div>
         )}
 
-        <Button fullWidth onClick={handleHarvest} disabled={harvest.isPending}>
-          {harvest.isPending ? '⏳ Harvesting...' : `🌾 Harvest ${netYield.toFixed(0)} GOLD`}
-        </Button>
+        <button
+          onClick={handleHarvest}
+          disabled={harvest.isPending}
+          className="w-full bg-gradient-to-r from-green-600 to-emerald-500 py-4 rounded-2xl text-white font-black active:scale-95 transition-all disabled:opacity-40"
+        >
+          {harvest.isPending ? 'Harvesting…' : `Harvest ${netYield.toFixed(0)} GOLD`}
+        </button>
 
         {harvest.error && (
-          <p style={{ color: '#ff5722', fontSize: 13, marginTop: 10 }}>
-            {harvest.error.message}
-          </p>
+          <p className="text-red-400 text-xs mt-3">{harvest.error.message}</p>
         )}
       </div>
-    </Modal>
-  );
-}
-
-function StatCard({ label, value, color, large }: {
-  label: string; value: string; color: string; large?: boolean;
-}) {
-  return (
-    <div style={{
-      background: 'rgba(0,0,0,0.3)', borderRadius: 10, padding: '8px 12px',
-      gridColumn: large ? 'span 2' : undefined,
-    }}>
-      <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11, marginBottom: 2 }}>{label}</div>
-      <div style={{ color, fontWeight: 700, fontSize: large ? 22 : 16 }}>{value}</div>
     </div>
   );
 }

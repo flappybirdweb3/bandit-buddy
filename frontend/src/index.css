@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+@theme {
+  --font-game: 'Inter', system-ui, sans-serif;
+
+  --color-gold: #f59e0b;
+  --color-gold-light: #fcd34d;
+  --color-green: #22c55e;
+  --color-green-dark: #16a34a;
+  --color-bandit: #8b5cf6;
+  --color-bandit-light: #a78bfa;
+  --color-steal: #ef4444;
+  --color-steal-glow: rgba(239, 68, 68, 0.4);
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: #0a0a0a;
+  font-family: var(--font-game);
+  overflow: hidden;
+}
+
+/* Glassmorphism utility */
+.glass {
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.glass-gold {
+  background: rgba(245, 158, 11, 0.15);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.glass-green {
+  background: rgba(34, 197, 94, 0.15);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.glass-purple {
+  background: rgba(139, 92, 246, 0.2);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+}
+
+.glass-red {
+  background: rgba(239, 68, 68, 0.15);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+/* Tool button active glow */
+.tool-steal-glow {
+  box-shadow: 0 0 14px var(--color-steal-glow), 0 0 4px var(--color-steal-glow);
+}
+
+/* Pulse animation for ripe crops */
+@keyframes pulse-gold {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+.pulse-gold { animation: pulse-gold 1.5s ease-in-out infinite; }
+
+/* Slide-up for modals */
+@keyframes slide-up {
+  from { transform: translateY(100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.slide-up { animation: slide-up 0.25s cubic-bezier(0.16,1,0.3,1) both; }
+
+/* Bounce press */
+@keyframes pop {
+  0% { transform: scale(1); }
+  50% { transform: scale(0.9); }
+  100% { transform: scale(1); }
+}
