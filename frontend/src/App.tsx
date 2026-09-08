@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useReconnect } from 'wagmi';
 import { GameCanvas } from '@/game/GameCanvas';
 import { eventBus } from '@/game/EventBus';
 import { HUD } from '@/components/hud/HUD';
@@ -32,6 +33,15 @@ export function App() {
   const [modal, setModal] = useState<ActiveModal>(null);
   const [visitState, setVisitState] = useState<{ userId: string; username: string } | null>(null);
   const { myFarm } = useGame();
+  const { reconnect } = useReconnect();
+
+  // WalletConnect WebSocket drops when Telegram WebView is backgrounded (user switches to
+  // MetaMask to approve). Re-trigger on visibility so wagmi picks up the relay session.
+  useEffect(() => {
+    const handler = () => { if (document.visibilityState === 'visible') reconnect(); };
+    document.addEventListener('visibilitychange', handler);
+    return () => document.removeEventListener('visibilitychange', handler);
+  }, [reconnect]);
 
   const { data: friendFarm } = useQuery({
     queryKey: ['friendFarm', visitState?.userId],
