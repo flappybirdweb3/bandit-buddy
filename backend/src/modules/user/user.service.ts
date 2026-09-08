@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { User } from './entities/user.entity';
@@ -16,11 +16,41 @@ export class UserService {
     private readonly seedRepo: Repository<SeedConfig>,
   ) {}
 
+  private readonly DAILY_REWARDS = [50, 75, 100, 150, 200, 300, 500];
+  private readonly MAX_ENERGY = 100;
+  private readonly ENERGY_REGEN_PER_HOUR = 10;
+  private readonly DAILY_ENERGY_RESTORE = 50;
+  private readonly CLAIM_COOLDOWN_MS = 20 * 3600 * 1000;   // 20h — allows claiming same time each day
+  private readonly STREAK_WINDOW_MS  = 48 * 3600 * 1000;   // miss within 48h = streak resets
+
+  private async applyEnergyRegen(user: User): Promise<number> {
+    const now = Date.now();
+    const lastUpdate = user.lastEnergyUpdate?.getTime() ?? now;
+    const elapsedHours = (now - lastUpdate) / 3600_000;
+    const gained = Math.floor(elapsedHours * this.ENERGY_REGEN_PER_HOUR);
+    if (gained === 0) return user.energy;
+
+    const newEnergy = Math.min(this.MAX_ENERGY, user.energy + gained);
+    await this.userRepo.update(user.id, {
+      energy: newEnergy,
+      lastEnergyUpdate: new Date(),
+    });
+    return newEnergy;
+  }
+
   async getProfile(userId: string) {
     const user = await this.userRepo.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
 
-    const plotCount = await this.plotRepo.count({ where: { userId } });
+    const [plotCount, energy] = await Promise.all([
+      this.plotRepo.count({ where: { userId } }),
+      this.applyEnergyRegen(user),
+    ]);
+
+    const now = Date.now();
+    const lastClaim = user.lastDailyClaim?.getTime() ?? 0;
+    const canClaimDaily = (now - lastClaim) >= this.CLAIM_COOLDOWN_MS;
+    const nextClaimAt = lastClaim ? new Date(lastClaim + this.CLAIM_COOLDOWN_MS) : null;
 
     return {
       id: user.id,
@@ -28,9 +58,47 @@ export class UserService {
       username: user.username,
       walletAddress: user.walletAddress,
       goldBalance: Number(user.goldBalance),
-      energy: user.energy,
+      energy,
       trustScore: user.trustScore,
       plotCount,
+      dailyStreak: user.dailyStreak,
+      canClaimDaily,
+      nextClaimAt,
+    };
+  }
+
+  async claimDaily(userId: string) {
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    const now = Date.now();
+    const lastClaim = user.lastDailyClaim?.getTime() ?? 0;
+
+    if ((now - lastClaim) < this.CLAIM_COOLDOWN_MS) {
+      const nextAt = new Date(lastClaim + this.CLAIM_COOLDOWN_MS);
+      throw new BadRequestException(`Already claimed. Next reward at ${nextAt.toISOString()}`);
+    }
+
+    const isConsecutive = lastClaim > 0 && (now - lastClaim) < this.STREAK_WINDOW_MS;
+    const newStreak = isConsecutive ? Math.min(user.dailyStreak + 1, 7) : 1;
+    const goldReward = this.DAILY_REWARDS[newStreak - 1];
+    const energyRestore = newStreak === 7 ? this.MAX_ENERGY : this.DAILY_ENERGY_RESTORE;
+    const nextStreakReward = this.DAILY_REWARDS[newStreak % 7];
+
+    await this.userRepo.update(userId, {
+      goldBalance: () => `"gold_balance" + ${goldReward}`,
+      energy: () => `LEAST(${this.MAX_ENERGY}, "energy" + ${energyRestore})`,
+      lastDailyClaim: new Date(),
+      lastEnergyUpdate: new Date(),
+      dailyStreak: newStreak,
+    });
+
+    return {
+      goldReward,
+      energyRestore,
+      streak: newStreak,
+      nextStreakReward,
+      isMaxStreak: newStreak === 7,
     };
   }
 

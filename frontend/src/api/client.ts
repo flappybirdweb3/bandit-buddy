@@ -1,7 +1,7 @@
 import WebApp from '@twa-dev/sdk';
 import type {
   UserProfile, FarmData, SeedConfig, StealResult, ClaimPayload, LeaderboardData,
-  FriendEntry, ReferralInfo,
+  FriendEntry, ReferralInfo, DailyClaimResult,
 } from '@/types/game.types';
 
 const BASE_URL = '/api';
@@ -72,4 +72,7 @@ export const api = {
   // Friends & referral
   getFriends: () => request<FriendEntry[]>('/user/friends'),
   getReferral: () => request<ReferralInfo>('/user/referral'),
+
+  // Daily reward
+  claimDaily: () => request<DailyClaimResult>('/user/daily-claim', { method: 'POST' }),
 };

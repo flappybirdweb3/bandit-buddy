@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Body, UseGuards, Query } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, UseGuards, Query } from '@nestjs/common';
 import { UserService } from './user.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -22,6 +22,11 @@ export class UserController {
   @Get('profile')
   async getProfile(@CurrentUser() user: User) {
     return this.userService.getProfile(user.id);
+  }
+
+  @Post('daily-claim')
+  async claimDaily(@CurrentUser() user: User) {
+    return this.userService.claimDaily(user.id);
   }
 
   @Get('friends')

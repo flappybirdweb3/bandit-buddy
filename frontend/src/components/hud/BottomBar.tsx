@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { MousePointer2, Shovel, Sprout, Droplets, Bug, Hand, Users, Trophy, Gem } from 'lucide-react';
+import { MousePointer2, Shovel, Sprout, Droplets, Bug, Hand, Users, Trophy, Gem, Flame } from 'lucide-react';
 import { ClaimModal } from '@/components/modals/ClaimModal';
 import { LeaderboardModal } from '@/components/modals/LeaderboardModal';
+import { DailyRewardModal } from '@/components/modals/DailyRewardModal';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useGame } from '@/providers/GameProvider';
 import { eventBus } from '@/game/EventBus';
@@ -25,6 +26,7 @@ export function BottomBar({ onShowFriends }: Props) {
   const [activeTool, setActiveTool] = useState<ToolId>('cursor');
   const [showClaim, setShowClaim] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showDaily, setShowDaily] = useState(false);
   const { profile } = useGame();
 
   const handleTool = (id: ToolId) => {
@@ -73,6 +75,20 @@ export function BottomBar({ onShowFriends }: Props) {
 
         {/* ── Nav bar ── */}
         <div className="flex items-center gap-2 px-3 pointer-events-auto">
+          {/* Daily reward */}
+          <NavBtn
+            icon={
+              <div className="relative">
+                <Flame size={18} className={profile?.canClaimDaily ? 'text-orange-400' : undefined} />
+                {profile?.canClaimDaily && (
+                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-orange-400 rounded-full animate-pulse" />
+                )}
+              </div>
+            }
+            label="Daily"
+            onClick={() => setShowDaily(true)}
+          />
+
           {/* Friends */}
           <NavBtn
             icon={<Users size={18} />}
@@ -116,6 +132,13 @@ export function BottomBar({ onShowFriends }: Props) {
 
       {showLeaderboard && (
         <LeaderboardModal onClose={() => setShowLeaderboard(false)} />
+      )}
+
+      {showDaily && (
+        <DailyRewardModal
+          currentStreak={profile?.dailyStreak ?? 0}
+          onClose={() => setShowDaily(false)}
+        />
       )}
     </>
   );

@@ -35,6 +35,15 @@ export class User {
   @Column({ type: 'uuid', nullable: true, name: 'referred_by' })
   referredBy: string | null;
 
+  @Column({ type: 'timestamp', default: () => 'NOW()', name: 'last_energy_update' })
+  lastEnergyUpdate: Date;
+
+  @Column({ type: 'timestamp', nullable: true, name: 'last_daily_claim' })
+  lastDailyClaim: Date | null;
+
+  @Column({ type: 'int', default: 0, name: 'daily_streak' })
+  dailyStreak: number;
+
   @ManyToOne(() => User, (u) => u.referrals, { nullable: true })
   @JoinColumn({ name: 'referred_by' })
   referrer: User | null;

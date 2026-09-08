@@ -7,6 +7,17 @@ export interface UserProfile {
   energy: number;
   trustScore: number;
   plotCount: number;
+  dailyStreak: number;
+  canClaimDaily: boolean;
+  nextClaimAt: string | null;
+}
+
+export interface DailyClaimResult {
+  goldReward: number;
+  energyRestore: number;
+  streak: number;
+  nextStreakReward: number;
+  isMaxStreak: boolean;
 }
 
 export interface SeedConfig {
