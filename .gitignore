@@ -1,0 +1,38 @@
+# Secrets — never commit
+.env
+secret.md
+
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Build outputs
+backend/dist/
+frontend/dist/
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+
+# Hardhat
+contracts/gas-report.txt
+contracts/deployment.*.json
+
+# TypeORM cache
+backend/src/database/migrations/*.js
+
+# Logs
+*.log
+/tmp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Coverage
+coverage/
+lcov.info
