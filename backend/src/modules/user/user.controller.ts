@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Patch, Body, UseGuards, Query } from '@nestjs/common';
 import { UserService } from './user.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -18,6 +18,14 @@ export class UserController {
   @Get('profile')
   async getProfile(@CurrentUser() user: User) {
     return this.userService.getProfile(user.id);
+  }
+
+  @Get('leaderboard')
+  async getLeaderboard(
+    @CurrentUser() user: User,
+    @Query('limit') limit?: string,
+  ) {
+    return this.userService.getLeaderboard(user.id, limit ? Math.min(parseInt(limit, 10), 100) : 50);
   }
 
   @Patch('wallet')

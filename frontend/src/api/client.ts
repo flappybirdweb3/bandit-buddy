@@ -1,6 +1,6 @@
 import WebApp from '@twa-dev/sdk';
 import type {
-  UserProfile, FarmData, SeedConfig, StealResult, ClaimPayload,
+  UserProfile, FarmData, SeedConfig, StealResult, ClaimPayload, LeaderboardData,
 } from '@/types/game.types';
 
 const BASE_URL = '/api';
@@ -64,4 +64,7 @@ export const api = {
     }),
 
   syncNft: () => request('/web3/sync-nft', { method: 'POST' }),
+
+  // Leaderboard
+  getLeaderboard: () => request<LeaderboardData>('/user/leaderboard'),
 };

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { MousePointer2, Shovel, Sprout, Droplets, Bug, Hand, Users, Trophy, Gem } from 'lucide-react';
 import { ClaimModal } from '@/components/modals/ClaimModal';
+import { LeaderboardModal } from '@/components/modals/LeaderboardModal';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useGame } from '@/providers/GameProvider';
 import { eventBus } from '@/game/EventBus';
@@ -23,6 +24,7 @@ interface Props {
 export function BottomBar({ onShowFriends }: Props) {
   const [activeTool, setActiveTool] = useState<ToolId>('cursor');
   const [showClaim, setShowClaim] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
   const { profile } = useGame();
 
   const handleTool = (id: ToolId) => {
@@ -101,7 +103,7 @@ export function BottomBar({ onShowFriends }: Props) {
           <NavBtn
             icon={<Trophy size={18} />}
             label="Ranks"
-            onClick={() => {}}
+            onClick={() => setShowLeaderboard(true)}
           />
         </div>
       </div>
@@ -110,6 +112,10 @@ export function BottomBar({ onShowFriends }: Props) {
         <ErrorBoundary>
           <ClaimModal onClose={() => setShowClaim(false)} />
         </ErrorBoundary>
+      )}
+
+      {showLeaderboard && (
+        <LeaderboardModal onClose={() => setShowLeaderboard(false)} />
       )}
     </>
   );

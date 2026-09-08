@@ -50,6 +50,20 @@ export interface ClaimPayload {
   signature: string;
 }
 
+export interface LeaderboardEntry {
+  rank: number;
+  userId: string;
+  username: string;
+  goldBalance: number;
+  trustScore: number;
+  isMe: boolean;
+}
+
+export interface LeaderboardData {
+  entries: LeaderboardEntry[];
+  myEntry: LeaderboardEntry | null;
+}
+
 export type PlotAction = 'plant' | 'harvest' | 'steal' | 'locked';
 
 export interface PlotClickEvent {
