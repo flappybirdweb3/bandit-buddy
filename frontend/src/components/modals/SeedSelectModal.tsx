@@ -1,9 +1,11 @@
+import { useEffect } from 'react';
 import { X, Clock, TrendingUp, Coins, ShieldAlert } from 'lucide-react';
 import { useGame } from '@/providers/GameProvider';
 import { usePlant } from '@/hooks/usePlotActions';
 
 interface Props {
   plotId: string;
+  preSelectedSeedId?: string;
   onClose: () => void;
 }
 
@@ -17,9 +19,16 @@ function fmtTime(sec: number) {
   return `${Math.floor(sec / 3600)}h`;
 }
 
-export function SeedSelectModal({ plotId, onClose }: Props) {
+export function SeedSelectModal({ plotId, preSelectedSeedId, onClose }: Props) {
   const { seeds, profile } = useGame();
   const plant = usePlant();
+
+  useEffect(() => {
+    if (preSelectedSeedId) {
+      plant.mutateAsync({ plotId, seedId: preSelectedSeedId }).then(onClose).catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handlePlant = async (seedId: string) => {
     await plant.mutateAsync({ plotId, seedId });

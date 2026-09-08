@@ -10,6 +10,7 @@ type EventMap = {
   'back-to-my-farm': void;
   'steal-animation': { success: boolean; plotIndex: number };
   'tool-changed': string;
+  'seed-preselected': { seedId: string; seedName: string };
 };
 
 type EventCallback<T> = (data: T) => void;

@@ -16,7 +16,7 @@ import { ArrowLeft } from 'lucide-react';
 import type { PlotClickEvent, FarmData } from '@/types/game.types';
 
 type ActiveModal =
-  | { type: 'seed'; plotId: string }
+  | { type: 'seed'; plotId: string; preSelectedSeedId?: string }
   | { type: 'harvest'; plotIndex: number }
   | { type: 'steal'; plotId: string; plotIndex: number; targetUserId: string; targetUsername: string }
   | { type: 'friends' }
@@ -26,6 +26,7 @@ type ActiveModal =
 export function App() {
   const [modal, setModal] = useState<ActiveModal>(null);
   const [visitState, setVisitState] = useState<{ userId: string; username: string } | null>(null);
+  const [preSelectedSeed, setPreSelectedSeed] = useState<{ seedId: string; seedName: string } | null>(null);
   const { myFarm } = useGame();
   const { reconnect } = useReconnect();
 
@@ -53,13 +54,19 @@ export function App() {
   }, [myFarm]);
 
   useEffect(() => {
+    const unsubSeed = eventBus.on('seed-preselected', (data) => setPreSelectedSeed(data));
+    return unsubSeed;
+  }, []);
+
+  useEffect(() => {
     const unsubPlot = eventBus.on('plot-clicked', (ev: PlotClickEvent) => {
       const activeFarm: FarmData | undefined = visitState ? friendFarm : myFarm;
       const plot = activeFarm?.plots[ev.plotIndex];
       if (!plot) return;
 
       if (ev.action === 'plant') {
-        setModal({ type: 'seed', plotId: ev.plotId });
+        setModal({ type: 'seed', plotId: ev.plotId, preSelectedSeedId: preSelectedSeed?.seedId });
+        setPreSelectedSeed(null);
       } else if (ev.action === 'harvest') {
         setModal({ type: 'harvest', plotIndex: ev.plotIndex });
       } else if (ev.action === 'steal' && visitState) {
@@ -105,11 +112,15 @@ export function App() {
       <FriendsBar />
 
       {/* ── Bottom toolbar + nav ── */}
-      <BottomBar onShowFriends={() => setModal({ type: 'friends' })} />
+      <BottomBar />
 
       {/* ── Modals ── */}
       {modal?.type === 'seed' && (
-        <SeedSelectModal plotId={modal.plotId} onClose={() => setModal(null)} />
+        <SeedSelectModal
+          plotId={modal.plotId}
+          preSelectedSeedId={modal.preSelectedSeedId}
+          onClose={() => setModal(null)}
+        />
       )}
 
       {modal?.type === 'harvest' && activeFarm && (

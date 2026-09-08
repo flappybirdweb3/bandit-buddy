@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { MousePointer2, Shovel, Sprout, Droplets, Bug, Hand, Users, Trophy, Gem, Flame } from 'lucide-react';
+import { MousePointer2, Shovel, Sprout, Droplets, Bug, Hand, Trophy, Gem, Flame, ShoppingBag } from 'lucide-react';
 import { ClaimModal } from '@/components/modals/ClaimModal';
 import { LeaderboardModal } from '@/components/modals/LeaderboardModal';
 import { DailyRewardModal } from '@/components/modals/DailyRewardModal';
+import { ShopModal } from '@/components/modals/ShopModal';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useGame } from '@/providers/GameProvider';
 import { eventBus } from '@/game/EventBus';
@@ -18,15 +19,12 @@ const TOOLS: { id: ToolId; icon: React.ReactNode; label: string; steal?: boolean
   { id: 'steal',  icon: <Hand size={20} />,          label: 'Steal', steal: true },
 ];
 
-interface Props {
-  onShowFriends: () => void;
-}
-
-export function BottomBar({ onShowFriends }: Props) {
+export function BottomBar() {
   const [activeTool, setActiveTool] = useState<ToolId>('cursor');
   const [showClaim, setShowClaim] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [showDaily, setShowDaily] = useState(false);
+  const [showShop, setShowShop] = useState(false);
   const { profile } = useGame();
 
   const handleTool = (id: ToolId) => {
@@ -89,11 +87,11 @@ export function BottomBar({ onShowFriends }: Props) {
             onClick={() => setShowDaily(true)}
           />
 
-          {/* Friends */}
+          {/* Shop */}
           <NavBtn
-            icon={<Users size={18} />}
-            label="Friends"
-            onClick={onShowFriends}
+            icon={<ShoppingBag size={18} />}
+            label="Shop"
+            onClick={() => setShowShop(true)}
           />
 
           {/* Claim $FARM — centre, bigger */}
@@ -140,6 +138,8 @@ export function BottomBar({ onShowFriends }: Props) {
           onClose={() => setShowDaily(false)}
         />
       )}
+
+      {showShop && <ShopModal onClose={() => setShowShop(false)} />}
     </>
   );
 }
