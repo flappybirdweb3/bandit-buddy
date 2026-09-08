@@ -1,4 +1,4 @@
-import { createWeb3Modal } from '@web3modal/wagmi';
+import { createWeb3Modal } from '@web3modal/wagmi/react';
 import { WagmiProvider, createConfig, http } from 'wagmi';
 import { bscTestnet } from 'wagmi/chains';
 import { injected, walletConnect } from 'wagmi/connectors';
