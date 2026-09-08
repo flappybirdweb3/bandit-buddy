@@ -13,24 +13,52 @@ WebApp.setHeaderColor('#0a0a0a');
 WebApp.setBackgroundColor('#0a0a0a');
 
 // ── Telegram WebView wallet deep-link patch ──────────────────────────────────
-// Telegram's WebView blocks window.open() for custom URL schemes (metamask://,
-// trust://, wc://).  Patch it so wallet universal links open via location.href
-// (which iOS handles natively) and HTTPS wallet links use Telegram.WebApp.openLink().
+// iOS Telegram WebView blocks ALL custom URL schemes (metamask://, trust://, wc://).
+// Solution: convert custom schemes → HTTPS Universal Links, then open via
+// Telegram.WebApp.openLink() which uses Safari — and Safari DOES redirect to the
+// wallet app via iOS Universal Links.
+//
+// Scheme → Universal Link mapping (official app-links from each wallet):
+//   metamask://   → https://metamask.app.link/
+//   trust://      → https://link.trustwallet.com/
+//   rainbow://    → https://rnbwapp.com/
+//   zerion://     → https://app.zerion.io/
+//   imtoken://    → https://token.im/
+//   tokenpocket:// → https://tokenpocket.pro/
 if ((window as any).Telegram?.WebApp) {
+  const tgOpenLink = (url: string) => (window as any).Telegram.WebApp.openLink(url);
+
+  const SCHEME_TO_UNIVERSAL: Record<string, string> = {
+    'metamask':    'https://metamask.app.link/',
+    'trust':       'https://link.trustwallet.com/',
+    'rainbow':     'https://rnbwapp.com/',
+    'zerion':      'https://app.zerion.io/',
+    'imtoken':     'https://token.im/',
+    'tokenpocket': 'https://tokenpocket.pro/',
+  };
+
+  function toUniversalLink(href: string): string | null {
+    const m = href.match(/^([a-z]+):\/\//i);
+    if (!m) return null;
+    const base = SCHEME_TO_UNIVERSAL[m[1].toLowerCase()];
+    return base ? href.replace(`${m[1]}://`, base) : null;
+  }
+
   const _open = window.open.bind(window);
   window.open = function (url?: string | URL, target?: string, features?: string) {
     if (!url) return _open(url, target, features);
     const href = url.toString();
 
-    // Custom wallet schemes — let iOS handle natively
-    if (/^(metamask|trust|rainbow|zerion|imtoken|tokenpocket|wc):\/\//i.test(href)) {
-      window.location.href = href;
+    // 1. Custom wallet scheme → convert to Universal Link, open in Safari
+    const universal = toUniversalLink(href);
+    if (universal) {
+      tgOpenLink(universal);
       return null;
     }
 
-    // HTTPS wallet universal links — open via Telegram API (avoids popup block)
-    if (/metamask\.app\.link|trustwallet\.com|link\.trustwallet|walletconnect\.com|walletlink\.org/i.test(href)) {
-      (window as any).Telegram.WebApp.openLink(href);
+    // 2. HTTPS wallet universal link already — open via Telegram (Safari)
+    if (/metamask\.app\.link|link\.trustwallet|rnbwapp\.com|zerion\.io|walletconnect\.com/i.test(href)) {
+      tgOpenLink(href);
       return null;
     }
 
