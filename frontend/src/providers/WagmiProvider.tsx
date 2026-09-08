@@ -40,10 +40,15 @@ try {
     defaultChain: bscTestnet,
     enableAnalytics: false,
     enableOnramp: false,
-    // Prioritise MetaMask + Trust Wallet in the picker
+    // Force MetaMask + Trust Wallet to show on main picker screen (not buried in All Wallets)
     featuredWalletIds: [
       'c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96', // MetaMask
       '4622a2b2d6af1c9844944291e5e7351a6aa24cd7b23099efac1b2fd875da31a0', // Trust Wallet
+    ],
+    includeWalletIds: [
+      'c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96', // MetaMask
+      '4622a2b2d6af1c9844944291e5e7351a6aa24cd7b23099efac1b2fd875da31a0', // Trust Wallet
+      '8a0ee50d1f22f6651afcae7eb4253e52a3310b90af5daef78a8c4929a9bb99d4', // Binance Web3 Wallet
     ],
   });
   web3ModalReady = true;
