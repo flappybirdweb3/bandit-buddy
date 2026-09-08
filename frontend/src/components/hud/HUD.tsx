@@ -3,6 +3,7 @@ import { Wallet, Settings, Zap, Coins } from 'lucide-react';
 import { useWeb3Modal } from '@web3modal/wagmi/react';
 import { useAccount } from 'wagmi';
 import { useGame } from '@/providers/GameProvider';
+import { SettingsModal } from '@/components/modals/SettingsModal';
 import type { ReactNode } from 'react';
 
 class WalletErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
@@ -37,6 +38,7 @@ function WalletButton() {
 
 export function HUD() {
   const { profile } = useGame();
+  const [showSettings, setShowSettings] = useState(false);
 
   if (!profile) return null;
 
@@ -49,6 +51,7 @@ export function HUD() {
   const xpPct = (profile.trustScore % 10) * 10;
 
   return (
+    <>
     <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none px-3 pt-2 pb-1">
       <div className="glass rounded-2xl flex items-center gap-2 px-3 py-2">
 
@@ -108,10 +111,16 @@ export function HUD() {
         </WalletErrorBoundary>
 
         {/* Settings */}
-        <button className="pointer-events-auto glass rounded-xl p-1.5 text-white/60 hover:text-white active:scale-95 transition-all">
+        <button
+          onClick={() => setShowSettings(true)}
+          className="pointer-events-auto glass rounded-xl p-1.5 text-white/60 hover:text-white active:scale-95 transition-all"
+        >
           <Settings size={14} />
         </button>
       </div>
     </div>
+
+    {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+    </>
   );
 }
