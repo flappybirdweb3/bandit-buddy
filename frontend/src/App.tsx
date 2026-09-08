@@ -13,7 +13,7 @@ import { FriendsModal } from '@/components/modals/FriendsModal';
 import { useGame } from '@/providers/GameProvider';
 import { api } from '@/api/client';
 import { ArrowLeft } from 'lucide-react';
-import type { PlotClickEvent, FarmData, TelegramFriend } from '@/types/game.types';
+import type { PlotClickEvent, FarmData } from '@/types/game.types';
 
 type ActiveModal =
   | { type: 'seed'; plotId: string }
@@ -22,12 +22,6 @@ type ActiveModal =
   | { type: 'friends' }
   | null;
 
-// Mock friends — real implementation reads from Telegram contacts
-const MOCK_FRIENDS: TelegramFriend[] = [
-  { id: 111112, username: 'alice_farmer', firstName: 'Alice', hasRipeCrops: true, userId: 'u1' },
-  { id: 111113, username: 'bob_thief',    firstName: 'Bob',   hasRipeCrops: false },
-  { id: 111114, username: 'charlie_grower', firstName: 'Charlie', hasRipeCrops: true, userId: 'u3' },
-];
 
 export function App() {
   const [modal, setModal] = useState<ActiveModal>(null);
@@ -108,7 +102,7 @@ export function App() {
       )}
 
       {/* ── Friends bar (above bottom bar) ── */}
-      <FriendsBar friends={MOCK_FRIENDS} />
+      <FriendsBar />
 
       {/* ── Bottom toolbar + nav ── */}
       <BottomBar onShowFriends={() => setModal({ type: 'friends' })} />

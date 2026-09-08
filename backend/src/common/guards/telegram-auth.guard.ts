@@ -29,21 +29,31 @@ export class TelegramAuthGuard implements CanActivate {
 
     if (!initData) throw new UnauthorizedException('Missing Telegram initData');
 
-    const telegramUser = this.validateInitData(initData);
+    const { telegramUser, startParam } = this.validateInitData(initData);
     if (!telegramUser) throw new UnauthorizedException('Invalid Telegram initData signature');
 
     let user = await this.userRepo.findOne({ where: { telegramId: telegramUser.id } });
+    const isNew = !user;
 
     if (!user) {
       user = await this.registerNewUser(telegramUser);
+    }
+
+    // Apply referral bonus on first login if came via invite link
+    if (isNew && startParam?.startsWith('ref_')) {
+      const refTelegramId = parseInt(startParam.slice(4), 10);
+      if (!isNaN(refTelegramId)) {
+        await this.applyReferral(user.id, refTelegramId);
+      }
     }
 
     request.user = user;
     return true;
   }
 
-  private validateInitData(initData: string): any {
+  private validateInitData(initData: string): { telegramUser: any; startParam: string | null } {
     const botToken = this.config.get<string>('telegram.botToken');
+    const empty = { telegramUser: null, startParam: null };
 
     // Dev mode: skip HMAC and parse user directly
     const isDev = !botToken
@@ -53,16 +63,19 @@ export class TelegramAuthGuard implements CanActivate {
       try {
         const params = new URLSearchParams(initData);
         const userParam = params.get('user');
-        return userParam ? JSON.parse(userParam) : null;
+        return {
+          telegramUser: userParam ? JSON.parse(userParam) : null,
+          startParam: params.get('start_param'),
+        };
       } catch {
-        return null;
+        return empty;
       }
     }
 
     try {
       const params = new URLSearchParams(initData);
       const hash = params.get('hash');
-      if (!hash) return null;
+      if (!hash) return empty;
 
       params.delete('hash');
       const dataCheckString = Array.from(params.entries())
@@ -80,13 +93,23 @@ export class TelegramAuthGuard implements CanActivate {
         .update(dataCheckString)
         .digest('hex');
 
-      if (computedHash !== hash) return null;
+      if (computedHash !== hash) return empty;
 
       const userParam = params.get('user');
-      return userParam ? JSON.parse(userParam) : null;
+      return {
+        telegramUser: userParam ? JSON.parse(userParam) : null,
+        startParam: params.get('start_param'),
+      };
     } catch {
-      return null;
+      return empty;
     }
+  }
+
+  private async applyReferral(newUserId: string, referrerTelegramId: number): Promise<void> {
+    const referrer = await this.userRepo.findOne({ where: { telegramId: referrerTelegramId } });
+    if (!referrer || referrer.id === newUserId) return;
+    await this.userRepo.update(newUserId, { referredBy: referrer.id });
+    await this.userRepo.increment({ id: referrer.id }, 'goldBalance', 25);
   }
 
   private async registerNewUser(telegramUser: any): Promise<User> {

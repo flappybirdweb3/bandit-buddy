@@ -1,6 +1,6 @@
 import {
   Entity, PrimaryGeneratedColumn, Column, CreateDateColumn,
-  UpdateDateColumn, OneToMany,
+  UpdateDateColumn, OneToMany, ManyToOne, JoinColumn,
 } from 'typeorm';
 import { FarmPlot } from '../../farm/entities/farm-plot.entity';
 import { StealLog } from '../../farm/entities/steal-log.entity';
@@ -31,6 +31,16 @@ export class User {
 
   @Column({ type: 'int', default: 0 })
   nonce: number;
+
+  @Column({ type: 'uuid', nullable: true, name: 'referred_by' })
+  referredBy: string | null;
+
+  @ManyToOne(() => User, (u) => u.referrals, { nullable: true })
+  @JoinColumn({ name: 'referred_by' })
+  referrer: User | null;
+
+  @OneToMany(() => User, (u) => u.referrer)
+  referrals: User[];
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

@@ -80,3 +80,18 @@ export interface TelegramFriend {
   hasRipeCrops?: boolean;
   userId?: string; // game user id if registered
 }
+
+export interface FriendEntry {
+  userId: string;
+  username: string;
+  hasRipeCrops: boolean;
+  isStealable: boolean;
+}
+
+export interface ReferralInfo {
+  referralCount: number;
+  bonusEarned: number;
+  bonusPerReferral: number;
+  inviteLink: string;
+  shareText: string;
+}

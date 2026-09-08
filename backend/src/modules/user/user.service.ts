@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { User } from './entities/user.entity';
 import { FarmPlot } from '../farm/entities/farm-plot.entity';
+import { SeedConfig } from '../farm/entities/seed-config.entity';
 
 @Injectable()
 export class UserService {
@@ -11,6 +12,8 @@ export class UserService {
     private readonly userRepo: Repository<User>,
     @InjectRepository(FarmPlot)
     private readonly plotRepo: Repository<FarmPlot>,
+    @InjectRepository(SeedConfig)
+    private readonly seedRepo: Repository<SeedConfig>,
   ) {}
 
   async getProfile(userId: string) {
@@ -86,5 +89,70 @@ export class UserService {
     }
 
     return { entries, myEntry };
+  }
+
+  async getFriends(userId: string) {
+    // Friends = users who were referred by this user
+    const referred = await this.userRepo.find({
+      where: { referredBy: userId },
+      select: ['id', 'username', 'telegramId'],
+    });
+
+    if (referred.length === 0) return [];
+
+    // Check which friends have ripe harvestable plots
+    const now = new Date();
+    const results = await Promise.all(
+      referred.map(async (friend) => {
+        const ripePlot = await this.plotRepo
+          .createQueryBuilder('p')
+          .where('p.user_id = :uid', { uid: friend.id })
+          .andWhere('p.seed_id IS NOT NULL')
+          .andWhere('p.harvestable_at <= :now', { now })
+          .getOne();
+
+        const stealablePlot = ripePlot
+          ? await this.plotRepo
+              .createQueryBuilder('p')
+              .innerJoin(SeedConfig, 'sc', 'sc.id = p.seed_id')
+              .where('p.id = :pid', { pid: ripePlot.id })
+              .andWhere('p.total_stolen < sc.base_yield * 0.20')
+              .getOne()
+          : null;
+
+        return {
+          userId: friend.id,
+          username: friend.username ?? `Player${String(friend.telegramId).slice(-4)}`,
+          hasRipeCrops: !!ripePlot,
+          isStealable: !!stealablePlot,
+        };
+      }),
+    );
+
+    return results;
+  }
+
+  async getReferralInfo(user: User, botUsername: string) {
+    const referralCount = await this.userRepo.count({ where: { referredBy: user.id } });
+    const bonusPerReferral = 25;
+    const inviteLink = `https://t.me/${botUsername}?startapp=ref_${user.telegramId}`;
+    const shareText = `🥷 Join me in Bandit Buddy! Plant crops, steal from friends & earn $FARM token. Use my invite link:`;
+
+    return {
+      referralCount,
+      bonusEarned: referralCount * bonusPerReferral,
+      bonusPerReferral,
+      inviteLink,
+      shareText,
+    };
+  }
+
+  async applyReferral(newUserId: string, referrerTelegramId: number): Promise<void> {
+    const referrer = await this.userRepo.findOne({ where: { telegramId: referrerTelegramId } });
+    if (!referrer || referrer.id === newUserId) return;
+
+    await this.userRepo.update(newUserId, { referredBy: referrer.id });
+    // Bonus gold for referrer
+    await this.userRepo.increment({ id: referrer.id }, 'goldBalance', 25);
   }
 }

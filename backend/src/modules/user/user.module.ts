@@ -4,9 +4,10 @@ import { UserController } from './user.controller';
 import { UserService } from './user.service';
 import { User } from './entities/user.entity';
 import { FarmPlot } from '../farm/entities/farm-plot.entity';
+import { SeedConfig } from '../farm/entities/seed-config.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, FarmPlot])],
+  imports: [TypeOrmModule.forFeature([User, FarmPlot, SeedConfig])],
   controllers: [UserController],
   providers: [UserService],
   exports: [UserService, TypeOrmModule],

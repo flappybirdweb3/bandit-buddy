@@ -1,6 +1,7 @@
 import WebApp from '@twa-dev/sdk';
 import type {
   UserProfile, FarmData, SeedConfig, StealResult, ClaimPayload, LeaderboardData,
+  FriendEntry, ReferralInfo,
 } from '@/types/game.types';
 
 const BASE_URL = '/api';
@@ -67,4 +68,8 @@ export const api = {
 
   // Leaderboard
   getLeaderboard: () => request<LeaderboardData>('/user/leaderboard'),
+
+  // Friends & referral
+  getFriends: () => request<FriendEntry[]>('/user/friends'),
+  getReferral: () => request<ReferralInfo>('/user/referral'),
 };
