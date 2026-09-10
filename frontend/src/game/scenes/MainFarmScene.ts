@@ -745,6 +745,13 @@ export class MainFarmScene extends Phaser.Scene {
         if (!plot.hasBugs && !plot.hasWeeds) sprite.label.setColor('#88ccff');
       }
 
+      // Soil fertility warning (own farm only, ≤40%)
+      const fertility = plot.soilFertility ?? 100;
+      if (this.isOwnFarm && plot.isEmpty && fertility <= 40) {
+        const fertEmoji = fertility <= 0 ? '☠️' : '🌱';
+        sprite.label.setText(fertEmoji).setColor(fertility <= 0 ? '#ff4444' : '#ffaa44');
+      }
+
       // Infestation indicators (bugs / weeds)
       if (!plot.isEmpty) {
         let infestLabel = sprite.label.text;

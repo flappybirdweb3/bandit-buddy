@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, lazy, Suspense } from 'react';
-import { Settings, Zap, Coins, Bell, X, Gem } from 'lucide-react';
+import { Settings, Zap, Coins, Bell, X, Gem, Hammer } from 'lucide-react';
 import { WeatherBanner } from '@/components/hud/WeatherBanner';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useGame } from '@/providers/GameProvider';
@@ -9,9 +9,10 @@ import { useEnergyRegen } from '@/hooks/useEnergyRegen';
 import { soundManager } from '@/sounds/SoundManager';
 import { eventBus } from '@/game/EventBus';
 
-const SettingsModal      = lazy(() => import('@/components/modals/SettingsModal').then(m => ({ default: m.SettingsModal })));
-const NotificationModal  = lazy(() => import('@/components/modals/NotificationModal').then(m => ({ default: m.NotificationModal })));
-const AchievementModal   = lazy(() => import('@/components/modals/AchievementModal').then(m => ({ default: m.AchievementModal })));
+const SettingsModal         = lazy(() => import('@/components/modals/SettingsModal').then(m => ({ default: m.SettingsModal })));
+const NotificationModal     = lazy(() => import('@/components/modals/NotificationModal').then(m => ({ default: m.NotificationModal })));
+const AchievementModal      = lazy(() => import('@/components/modals/AchievementModal').then(m => ({ default: m.AchievementModal })));
+const FarmMaintenanceModal  = lazy(() => import('@/components/modals/FarmMaintenanceModal').then(m => ({ default: m.FarmMaintenanceModal })));
 
 
 function NotifToast({ title, body, onDismiss }: { title: string; body: string; onDismiss: () => void }) {
@@ -129,20 +130,21 @@ export function HUD() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showAchievements, setShowAchievements]   = useState(false);
   const [showEnergyPopup, setShowEnergyPopup]     = useState(false);
+  const [showMaintenance, setShowMaintenance]     = useState(false);
   const [toast, setToast] = useState<{ title: string; body: string } | null>(null);
   const prevUnread  = useRef<number>(0);
   const prevEnergy  = useRef<number | null>(null);
 
   // Block Phaser input whenever a HUD modal or popup is open
   useEffect(() => {
-    const open = showSettings || showNotifications || showAchievements || showEnergyPopup;
+    const open = showSettings || showNotifications || showAchievements || showEnergyPopup || showMaintenance;
     if (open) {
       eventBus.emit('ui-overlay', true);
       return;
     }
     const t = setTimeout(() => eventBus.emit('ui-overlay', false), 200);
     return () => clearTimeout(t);
-  }, [showSettings, showNotifications, showAchievements, showEnergyPopup]);
+  }, [showSettings, showNotifications, showAchievements, showEnergyPopup, showMaintenance]);
 
   const { data: inbox } = useQuery({
     queryKey: ['inbox'],
@@ -300,6 +302,14 @@ export function HUD() {
         </button>
 
         <button
+          onClick={() => setShowMaintenance(true)}
+          className="pointer-events-auto glass rounded-xl p-1.5 text-white/60 hover:text-white active:scale-95 transition-all"
+          title="Farm Maintenance"
+        >
+          <Hammer size={14} />
+        </button>
+
+        <button
           onClick={() => setShowSettings(true)}
           className="pointer-events-auto glass rounded-xl p-1.5 text-white/60 hover:text-white active:scale-95 transition-all"
         >
@@ -330,6 +340,7 @@ export function HUD() {
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
       {showNotifications && <NotificationModal onClose={() => setShowNotifications(false)} />}
       {showAchievements && <AchievementModal onClose={() => setShowAchievements(false)} />}
+      {showMaintenance && <FarmMaintenanceModal onClose={() => setShowMaintenance(false)} />}
     </Suspense>
     </>
   );

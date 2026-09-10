@@ -62,6 +62,7 @@ export interface FarmPlot {
   hasBugs: boolean;
   hasWeeds: boolean;
   hasDrySoil: boolean;
+  soilFertility: number;
 }
 
 export interface FarmData {

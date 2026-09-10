@@ -94,6 +94,7 @@ export class FarmService {
           hasBugs:    plot.hasBugs  ?? false,
           hasWeeds:   plot.hasWeeds ?? false,
           hasDrySoil,
+          soilFertility: plot.soilFertility ?? 100,
         };
       }),
     };
