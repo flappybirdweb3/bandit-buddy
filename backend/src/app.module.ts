@@ -14,6 +14,7 @@ import { NotificationModule } from './modules/notification/notification.module';
 import { QuestModule } from './modules/quest/quest.module';
 import { ShopModule } from './modules/shop/shop.module';
 import { BotModule } from './modules/bot/bot.module';
+import { GuildModule } from './modules/guild/guild.module';
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { BotModule } from './modules/bot/bot.module';
     QuestModule,
     ShopModule,
     BotModule,
+    GuildModule,
   ],
   providers: [
     {

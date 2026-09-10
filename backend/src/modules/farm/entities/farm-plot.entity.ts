@@ -36,6 +36,12 @@ export class FarmPlot {
   @Column({ type: 'timestamp', nullable: true, name: 'last_stolen_at' })
   lastStolenAt: Date | null;
 
+  @Column({ type: 'int', default: 100, name: 'soil_fertility' })
+  soilFertility: number;
+
+  @Column({ type: 'decimal', precision: 3, scale: 1, default: 1.0, name: 'yield_multiplier' })
+  yieldMultiplier: number;
+
   @Column({ type: 'boolean', default: false })
   fertilized: boolean;
 

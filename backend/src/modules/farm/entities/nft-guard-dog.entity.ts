@@ -26,6 +26,9 @@ export class NftGuardDog {
   @Column({ type: 'varchar', length: 20, default: 'nft' })
   source: string; // 'nft' | 'shop'
 
+  @Column({ type: 'timestamp', default: () => 'NOW()', name: 'last_fed_at' })
+  lastFedAt: Date;
+
   @ManyToOne(() => User, (user) => user.guardDogs)
   @JoinColumn({ name: 'owner_id' })
   owner: User;

@@ -25,6 +25,9 @@ export class StealLog {
   @Column({ type: 'boolean', default: true })
   success: boolean;
 
+  @Column({ type: 'boolean', default: true, name: 'is_anonymous' })
+  isAnonymous: boolean;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

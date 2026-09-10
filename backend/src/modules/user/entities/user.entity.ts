@@ -35,6 +35,12 @@ export class User {
   @Column({ type: 'int', default: 0 })
   nonce: number;
 
+  @Column({ type: 'int', default: 0 })
+  xp: number;
+
+  @Column({ type: 'int', default: 1 })
+  level: number;
+
   @Column({ type: 'uuid', nullable: true, name: 'referred_by' })
   referredBy: string | null;
 
