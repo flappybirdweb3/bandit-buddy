@@ -9,5 +9,6 @@ import { NftGuardDog } from '../farm/entities/nft-guard-dog.entity';
   imports: [TypeOrmModule.forFeature([User, NftGuardDog])],
   controllers: [Web3Controller],
   providers: [Web3Service],
+  exports: [Web3Service],
 })
 export class Web3Module {}

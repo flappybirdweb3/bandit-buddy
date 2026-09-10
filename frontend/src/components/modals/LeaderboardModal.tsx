@@ -1,78 +1,57 @@
-import { X, Trophy, Coins, Crown } from 'lucide-react';
+import { useState } from 'react';
+import { X, Trophy, Crown, Coins, Flame, Sword, Wheat } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import type { LeaderboardEntry } from '@/types/game.types';
 
 interface Props { onClose: () => void }
 
+type Category = 'thieves' | 'rich' | 'streak' | 'farmer';
+
+const CATEGORIES: { id: Category; label: string; icon: React.ReactNode; color: string; metricLabel: string; emoji: string }[] = [
+  { id: 'thieves', label: 'Raiders',  icon: <Sword size={13} />,  color: 'text-red-300',    metricLabel: 'Gold Stolen',  emoji: '🥷' },
+  { id: 'rich',    label: 'Richest',  icon: <Coins size={13} />,  color: 'text-amber-300',  metricLabel: 'Gold Balance', emoji: '💰' },
+  { id: 'streak',  label: 'Streaks',  icon: <Flame size={13} />,  color: 'text-orange-300', metricLabel: 'Day Streak',   emoji: '🔥' },
+  { id: 'farmer',  label: 'Farmers',  icon: <Wheat size={13} />,  color: 'text-green-300',  metricLabel: 'Harvests',     emoji: '🌾' },
+];
+
 const MEDAL: Record<number, string> = { 1: '🥇', 2: '🥈', 3: '🥉' };
 
-function RankRow({ entry, divider }: { entry: LeaderboardEntry; divider?: boolean }) {
-  const medal = MEDAL[entry.rank];
-  return (
-    <div
-      className={[
-        'flex items-center gap-3 px-4 py-3 transition-colors',
-        entry.isMe ? 'bg-violet-500/15 border border-violet-500/30 rounded-2xl mx-2 my-1' : '',
-        divider ? 'border-t border-white/5 mt-2 pt-4' : '',
-      ].join(' ')}
-    >
-      {/* Rank */}
-      <div className="w-8 text-center flex-shrink-0">
-        {medal
-          ? <span className="text-lg">{medal}</span>
-          : <span className="text-white/40 text-sm font-bold">#{entry.rank}</span>
-        }
-      </div>
+function fmtGold(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return n.toFixed(0);
+}
 
-      {/* Avatar */}
-      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${
-        entry.isMe
-          ? 'bg-gradient-to-br from-violet-500 to-purple-700 text-white'
-          : 'bg-gradient-to-br from-green-500 to-emerald-700 text-white'
-      }`}>
-        {(entry.username ?? '?')[0].toUpperCase()}
-      </div>
-
-      {/* Name */}
-      <div className="flex-1 min-w-0">
-        <div className={`text-sm font-bold truncate ${entry.isMe ? 'text-violet-300' : 'text-white'}`}>
-          {entry.username ?? 'Unknown'}
-          {entry.isMe && <span className="ml-1.5 text-[10px] text-violet-400 font-normal">(you)</span>}
-        </div>
-        <div className="text-[10px] text-white/30">Trust {entry.trustScore}</div>
-      </div>
-
-      {/* Gold */}
-      <div className="flex items-center gap-1 flex-shrink-0">
-        <Coins size={12} className="text-amber-400" />
-        <span className="text-amber-300 font-bold text-sm">
-          {entry.goldBalance >= 1000
-            ? `${(entry.goldBalance / 1000).toFixed(1)}k`
-            : entry.goldBalance.toFixed(0)}
-        </span>
-      </div>
-    </div>
-  );
+function getMetric(entry: LeaderboardEntry, cat: Category) {
+  if (cat === 'thieves') return fmtGold(entry.goldStolen);
+  if (cat === 'rich')    return fmtGold(entry.goldBalance);
+  if (cat === 'farmer')  return `${entry.totalHarvests ?? 0}`;
+  return `${entry.dailyStreak}d`;
 }
 
 export function LeaderboardModal({ onClose }: Props) {
+  const [cat, setCat] = useState<Category>('thieves');
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ['leaderboard'],
-    queryFn: api.getLeaderboard,
+    queryKey: ['leaderboard', cat],
+    queryFn: () => api.getLeaderboard(cat),
     staleTime: 30_000,
   });
+
+  const catMeta = CATEGORIES.find((c) => c.id === cat)!;
+  const top3 = data?.entries.slice(0, 3) ?? [];
+  const rest = data?.entries.slice(3) ?? [];
 
   return (
     <div className="fixed inset-0 z-[100] flex items-end justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
         className="relative w-full max-w-md glass rounded-t-3xl slide-up flex flex-col"
-        style={{ maxHeight: '80vh' }}
+        style={{ maxHeight: '88vh' }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Handle */}
-        <div className="w-10 h-1 bg-white/20 rounded-full mx-auto mt-3 mb-0 flex-shrink-0" />
+        <div className="w-10 h-1 bg-white/20 rounded-full mx-auto mt-3 flex-shrink-0" />
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-4 pb-3 flex-shrink-0">
@@ -80,7 +59,7 @@ export function LeaderboardModal({ onClose }: Props) {
             <Crown size={18} className="text-amber-400" />
             <div>
               <h2 className="text-white font-black text-base leading-none">Leaderboard</h2>
-              <p className="text-white/40 text-xs">Top GOLD farmers</p>
+              <p className="text-white/40 text-xs mt-0.5">{catMeta.emoji} {catMeta.metricLabel} rankings</p>
             </div>
           </div>
           <button onClick={onClose} className="glass rounded-full p-2 text-white/60 hover:text-white active:scale-90 transition-all">
@@ -88,79 +67,156 @@ export function LeaderboardModal({ onClose }: Props) {
           </button>
         </div>
 
-        {/* Top-3 podium */}
-        {data && data.entries.length >= 3 && (
-          <div className="flex items-end justify-center gap-3 px-5 pb-4 flex-shrink-0">
-            {/* 2nd */}
-            <PodiumCard entry={data.entries[1]} height="h-20" />
-            {/* 1st */}
-            <PodiumCard entry={data.entries[0]} height="h-28" highlight />
-            {/* 3rd */}
-            <PodiumCard entry={data.entries[2]} height="h-16" />
+        {/* Category tabs */}
+        <div className="flex-shrink-0 px-5 mb-4">
+          <div className="glass rounded-2xl flex p-1 gap-1">
+            {CATEGORIES.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setCat(c.id)}
+                className={[
+                  'flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-bold transition-all',
+                  cat === c.id ? 'bg-white/15 text-white' : 'text-white/40',
+                ].join(' ')}
+              >
+                {c.icon} {c.label}
+              </button>
+            ))}
           </div>
-        )}
-
-        {/* List */}
-        <div className="overflow-y-auto flex-1 pb-4">
-          {isLoading && (
-            <div className="text-center py-12 text-white/40 text-sm">Loading rankings…</div>
-          )}
-          {error && (
-            <div className="text-center py-12 text-red-400 text-sm">Failed to load leaderboard</div>
-          )}
-          {data && (
-            <>
-              {/* Skip top 3 since shown in podium */}
-              {data.entries.slice(3).map((entry) => (
-                <RankRow key={entry.userId} entry={entry} />
-              ))}
-
-              {/* My rank separator if not in top list */}
-              {data.myEntry && (
-                <RankRow entry={data.myEntry} divider />
-              )}
-            </>
-          )}
         </div>
 
-        {/* Trophy icon at top 3 */}
-        {data?.entries.length === 0 && !isLoading && (
-          <div className="text-center py-12">
-            <Trophy size={40} className="text-white/20 mx-auto mb-3" />
-            <div className="text-white/40 text-sm">No players yet. Be the first!</div>
-          </div>
-        )}
+        <div className="overflow-y-auto flex-1 pb-6">
+          {/* Podium */}
+          {!isLoading && !error && top3.length >= 3 && (
+            <div className="flex items-end justify-center gap-2 px-6 pb-5">
+              <PodiumCard entry={top3[1]} cat={cat} height={72} />
+              <PodiumCard entry={top3[0]} cat={cat} height={96} highlight />
+              <PodiumCard entry={top3[2]} cat={cat} height={60} />
+            </div>
+          )}
+
+          {/* Loading / error */}
+          {isLoading && (
+            <div className="text-center py-10 text-white/40 text-sm">Loading rankings…</div>
+          )}
+          {error && (
+            <div className="text-center py-10 text-red-400 text-sm">Failed to load leaderboard</div>
+          )}
+
+          {/* Rest of list (rank 4+) */}
+          {!isLoading && !error && data && (
+            <div className="flex flex-col">
+              {rest.map((entry, i) => (
+                <RankRow key={entry.userId} entry={entry} cat={cat} divider={i === 0 && top3.length >= 3} />
+              ))}
+
+              {/* My rank pinned at bottom if not in top */}
+              {data.myEntry && !data.entries.some((e) => e.isMe) && (
+                <>
+                  <div className="mx-5 my-2 border-t border-white/10" />
+                  <div className="mx-4">
+                    <RankRow entry={data.myEntry} cat={cat} pinned />
+                  </div>
+                </>
+              )}
+
+              {data.entries.length === 0 && (
+                <div className="text-center py-12">
+                  <Trophy size={40} className="text-white/20 mx-auto mb-3" />
+                  <p className="text-white/40 text-sm">No players yet. Be the first!</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function PodiumCard({ entry, height, highlight }: { entry: LeaderboardEntry; height: string; highlight?: boolean }) {
+// ─── Podium card (top 3) ─────────────────────────────────────────
+function PodiumCard({ entry, cat, height, highlight }: {
+  entry: LeaderboardEntry; cat: Category; height: number; highlight?: boolean;
+}) {
   const medal = MEDAL[entry.rank]!;
+  const metric = getMetric(entry, cat);
+
   return (
-    <div className={`flex flex-col items-center gap-1 flex-1 ${highlight ? 'order-none' : ''}`}>
-      <span className="text-xl">{medal}</span>
-      <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold border-2 ${
+    <div className="flex flex-col items-center gap-1 flex-1">
+      {highlight && <Crown size={16} className="text-amber-400 mb-0.5" />}
+      <span className="text-xl leading-none">{medal}</span>
+      <div className={[
+        'w-11 h-11 rounded-full flex items-center justify-center text-sm font-black border-2',
         highlight
-          ? 'bg-gradient-to-br from-amber-400 to-yellow-600 border-amber-300 text-black'
+          ? 'bg-gradient-to-br from-amber-400 to-yellow-600 border-amber-300/60 text-black shadow-[0_0_16px_rgba(251,191,36,0.5)]'
           : entry.isMe
-            ? 'bg-gradient-to-br from-violet-500 to-purple-700 border-violet-400 text-white'
-            : 'bg-gradient-to-br from-green-500 to-emerald-700 border-white/20 text-white'
-      }`}>
+            ? 'bg-gradient-to-br from-violet-500 to-purple-700 border-violet-400/40 text-white'
+            : 'bg-gradient-to-br from-slate-600 to-slate-800 border-white/20 text-white',
+      ].join(' ')}>
         {(entry.username ?? '?')[0].toUpperCase()}
       </div>
-      <div className={`text-[10px] font-bold truncate max-w-full px-1 ${highlight ? 'text-amber-300' : 'text-white/70'}`}>
-        {entry.username?.split('_')[0] ?? 'Unknown'}
+      <p className={`text-[10px] font-bold truncate w-full text-center px-1 ${highlight ? 'text-amber-300' : 'text-white/70'}`}>
+        @{entry.username?.split('_')[0] ?? '—'}
+      </p>
+      {/* Platform */}
+      <div
+        className={`w-full rounded-t-xl flex flex-col items-center justify-end pb-2 pt-3 ${highlight ? 'glass-gold' : 'glass'}`}
+        style={{ height }}
+      >
+        <p className="text-amber-300 font-black text-sm">{metric}</p>
+        <p className="text-white/30 text-[9px] mt-0.5">{CATEGORIES.find(c => c.id === cat)?.metricLabel}</p>
       </div>
-      <div className={`${height} w-full rounded-t-xl flex flex-col items-center justify-end pb-2 ${
-        highlight ? 'glass-gold' : 'glass'
-      }`}>
-        <Coins size={11} className="text-amber-400" />
-        <span className="text-amber-300 font-bold text-xs">
-          {entry.goldBalance >= 1000
-            ? `${(entry.goldBalance / 1000).toFixed(1)}k`
-            : entry.goldBalance.toFixed(0)}
-        </span>
+    </div>
+  );
+}
+
+// ─── Rank row (4th place and below) ─────────────────────────────
+function RankRow({ entry, cat, divider, pinned }: {
+  entry: LeaderboardEntry; cat: Category; divider?: boolean; pinned?: boolean;
+}) {
+  const medal = MEDAL[entry.rank];
+  const metric = getMetric(entry, cat);
+  const catMeta = CATEGORIES.find((c) => c.id === cat)!;
+
+  return (
+    <div
+      className={[
+        'flex items-center gap-3 px-4 py-2.5',
+        entry.isMe || pinned ? 'mx-2 my-1 rounded-2xl border border-violet-500/30 bg-violet-500/10' : '',
+        divider ? 'mt-2' : '',
+      ].join(' ')}
+    >
+      {/* Rank number */}
+      <div className="w-8 text-center flex-shrink-0">
+        {medal
+          ? <span className="text-base">{medal}</span>
+          : <span className="text-white/35 text-xs font-bold">#{entry.rank}</span>
+        }
+      </div>
+
+      {/* Avatar */}
+      <div className={[
+        'w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0',
+        entry.isMe
+          ? 'bg-gradient-to-br from-violet-500 to-purple-700 text-white'
+          : 'bg-gradient-to-br from-slate-600 to-slate-800 text-white/80',
+      ].join(' ')}>
+        {(entry.username ?? '?')[0].toUpperCase()}
+      </div>
+
+      {/* Name */}
+      <div className="flex-1 min-w-0">
+        <p className={`text-sm font-bold truncate ${entry.isMe ? 'text-violet-300' : 'text-white'}`}>
+          @{entry.username ?? 'Unknown'}
+          {(entry.isMe || pinned) && <span className="ml-1.5 text-[10px] text-violet-400 font-normal">(you)</span>}
+        </p>
+        <p className="text-[10px] text-white/25">trust {entry.trustScore}</p>
+      </div>
+
+      {/* Metric */}
+      <div className="flex items-center gap-1 flex-shrink-0">
+        <span className="text-sm">{catMeta.emoji}</span>
+        <span className={`font-black text-sm ${catMeta.color}`}>{metric}</span>
       </div>
     </div>
   );

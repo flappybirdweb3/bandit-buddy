@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { SEED_EMOJI } from "@/constants/seeds";
 import { X, Hand, Coins, Zap, ShieldAlert, AlertTriangle } from 'lucide-react';
 import { useSteal } from '@/hooks/usePlotActions';
+import { eventBus } from '@/game/EventBus';
 import type { FarmPlot, StealResult } from '@/types/game.types';
 
 interface Props {
@@ -8,20 +10,31 @@ interface Props {
   plotIndex: number;
   targetUserId: string;
   targetUsername: string;
+  hasGuardDog: boolean;
+  guardDogType: string | null;
+  guardDogDefense?: number;
   onClose: () => void;
 }
 
-const SEED_EMOJI: Record<string, string> = {
-  wheat: '🌾', carrot: '🥕', corn: '🌽', tomato: '🍅', pumpkin: '🎃',
+const PET_EMOJI: Record<string, string> = {
+  dog_stray: '🐶', dog_beagle: '🐕', dog_husky: '🐺',
+  dog_shepherd: '🦮', elephant: '🐘',
+  guard_pup: '🐕', guard_hound: '🐺',
+};
+const PET_NAME: Record<string, string> = {
+  dog_stray: 'Stray Dog', dog_beagle: 'Beagle', dog_husky: 'Husky',
+  dog_shepherd: 'German Shepherd', elephant: 'Elephant',
+  guard_pup: 'Guard Pup', guard_hound: 'Guard Hound',
 };
 
-export function StealModal({ plot, plotIndex, targetUserId, targetUsername, onClose }: Props) {
+export function StealModal({ plot, plotIndex, targetUserId, targetUsername, hasGuardDog, guardDogType, guardDogDefense = 0, onClose }: Props) {
   const steal = useSteal(plotIndex);
   const [result, setResult] = useState<StealResult | null>(null);
 
   const handleSteal = async () => {
     const res = await steal.mutateAsync({ targetUserId, plotId: plot.id });
     setResult(res);
+    eventBus.emit('play-sound', res.success ? 'steal_win' : 'steal_fail');
   };
 
   const stealAmount = plot.seed
@@ -106,21 +119,46 @@ export function StealModal({ plot, plotIndex, targetUserId, targetUsername, onCl
               label="Energy cost" value="-10 ⚡" />
             <StatCell icon={<Coins size={12} className="text-white/40" />}
               label="Steal pool left" value={`${plot.stealableRemaining.toFixed(1)}G`} />
-            <StatCell icon={<ShieldAlert size={12} className="text-green-400" />}
-              label="Base success" value="80%" positive />
+            <StatCell icon={<ShieldAlert size={12} className={hasGuardDog ? 'text-amber-400' : 'text-green-400'} />}
+              label="Success rate"
+              value={`${Math.max(0, 80 - guardDogDefense)}%`}
+              positive={!hasGuardDog} />
           </div>
         </div>
 
-        {/* Dog bite warning */}
-        <div className="glass-red rounded-2xl p-3 mb-5 flex gap-2.5 items-start">
-          <AlertTriangle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
-          <p className="text-white/70 text-xs leading-relaxed">
-            Guard dog may bite! Failure costs{' '}
-            <span className="text-red-400 font-bold">20 ⚡ energy</span> and{' '}
-            <span className="text-red-400 font-bold">5% of your GOLD</span>.
-            Dog defense reduces your success rate.
-          </p>
-        </div>
+        {/* Dog warning — dynamic based on target's actual dog */}
+        {hasGuardDog ? (
+          <div className="glass-red rounded-2xl p-3 mb-5 flex gap-2.5 items-start border border-amber-400/30 bg-amber-500/10">
+            <span className="text-xl flex-shrink-0">{PET_EMOJI[guardDogType ?? ''] ?? '🐕'}</span>
+            <div>
+              <p className="text-amber-300 font-bold text-xs leading-tight mb-1">
+                {PET_NAME[guardDogType ?? ''] ?? 'Guard Pet'} on duty!
+              </p>
+              {guardDogDefense >= 80 ? (
+                <p className="text-red-400 text-[11px] font-bold">
+                  🔒 This farm is fully protected — theft impossible!
+                </p>
+              ) : (
+                <p className="text-white/60 text-[11px] leading-relaxed">
+                  Success rate reduced to{' '}
+                  <span className="text-amber-300 font-bold">{Math.max(0, 80 - guardDogDefense)}%</span>.
+                  {' '}Failure costs{' '}
+                  <span className="text-red-400 font-bold">20 ⚡</span> and{' '}
+                  <span className="text-red-400 font-bold">5% of your GOLD</span>.
+                </p>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="glass-red rounded-2xl p-3 mb-5 flex gap-2.5 items-start">
+            <AlertTriangle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
+            <p className="text-white/70 text-xs leading-relaxed">
+              No guard dog detected — 80% success chance!
+              Failure still costs <span className="text-red-400 font-bold">20 ⚡</span> and{' '}
+              <span className="text-red-400 font-bold">5% of your GOLD</span>.
+            </p>
+          </div>
+        )}
 
         {/* Actions */}
         <div className="flex gap-3">

@@ -8,6 +8,7 @@ import { DataSource, Repository } from 'typeorm';
 import * as crypto from 'crypto';
 import { User } from '../../modules/user/entities/user.entity';
 import { FarmPlot } from '../../modules/farm/entities/farm-plot.entity';
+import { NotificationService } from '../../modules/notification/notification.service';
 
 @Injectable()
 export class TelegramAuthGuard implements CanActivate {
@@ -16,6 +17,7 @@ export class TelegramAuthGuard implements CanActivate {
 
   constructor(
     private readonly config: ConfigService,
+    private readonly notificationService: NotificationService,
     @InjectDataSource()
     dataSource: DataSource,
   ) {
@@ -43,7 +45,7 @@ export class TelegramAuthGuard implements CanActivate {
     if (isNew && startParam?.startsWith('ref_')) {
       const refTelegramId = parseInt(startParam.slice(4), 10);
       if (!isNaN(refTelegramId)) {
-        await this.applyReferral(user.id, refTelegramId);
+        await this.applyReferral(user.id, refTelegramId, telegramUser.username ?? telegramUser.first_name ?? 'Someone');
       }
     }
 
@@ -55,10 +57,9 @@ export class TelegramAuthGuard implements CanActivate {
     const botToken = this.config.get<string>('telegram.botToken');
     const empty = { telegramUser: null, startParam: null };
 
-    // Dev mode: skip HMAC and parse user directly
-    const isDev = !botToken
-      || botToken === 'your_telegram_bot_token_here'
-      || process.env.NODE_ENV === 'development';
+    // Dev mode: skip HMAC ONLY when no real bot token is configured
+    // Never bypass on NODE_ENV — that would expose production to devuser spoofing
+    const isDev = !botToken || botToken === 'your_telegram_bot_token_here';
     if (isDev) {
       try {
         const params = new URLSearchParams(initData);
@@ -105,18 +106,27 @@ export class TelegramAuthGuard implements CanActivate {
     }
   }
 
-  private async applyReferral(newUserId: string, referrerTelegramId: number): Promise<void> {
+  private async applyReferral(newUserId: string, referrerTelegramId: number, newUsername: string): Promise<void> {
     const referrer = await this.userRepo.findOne({ where: { telegramId: referrerTelegramId } });
     if (!referrer || referrer.id === newUserId) return;
-    await this.userRepo.update(newUserId, { referredBy: referrer.id });
-    await this.userRepo.increment({ id: referrer.id }, 'goldBalance', 25);
+    // Both parties get 120G: referrer as reward, new user as welcome bonus
+    await Promise.all([
+      this.userRepo.update(newUserId, { referredBy: referrer.id }),
+      this.userRepo.increment({ id: newUserId }, 'goldBalance', 120),
+      this.userRepo.increment({ id: referrer.id }, 'goldBalance', 120),
+    ]);
+    if (referrer.notificationsEnabled) {
+      this.notificationService.notifyReferralBonus(
+        referrer.id, Number(referrer.telegramId), newUsername, 120,
+      ).catch(() => {});
+    }
   }
 
   private async registerNewUser(telegramUser: any): Promise<User> {
     const user = this.userRepo.create({
       telegramId: telegramUser.id,
       username: telegramUser.username || telegramUser.first_name,
-      goldBalance: 50, // Starter gold
+      goldBalance: 250, // Starter gold — enough for 2 Turnips (120G each)
       energy: 100,
       trustScore: 50,
       nonce: 0,

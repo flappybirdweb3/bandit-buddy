@@ -18,6 +18,8 @@ export default () => ({
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     botUsername: process.env.TELEGRAM_BOT_USERNAME || 'BanditBuddyBot',
+    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
+    appUrl: process.env.APP_URL || 'https://bandit.wvnd.vn',
   },
 
   jwt: {
@@ -33,17 +35,26 @@ export default () => ({
     nftContractAddress: process.env.NFT_CONTRACT_ADDRESS || '',
   },
 
+  admin: {
+    passcode: process.env.ADMIN_PASSCODE || '',
+  },
+
+  seasonal: {
+    // Override via env: SEASONAL_EVENT=halloween|christmas|lunar|none
+    event: process.env.SEASONAL_EVENT || 'none',
+  },
+
   game: {
     minTrustScore: parseInt(process.env.MIN_TRUST_SCORE ?? '30', 10) || 30,
     initialPlots: 6,
     initialEnergy: 100,
     maxEnergy: 100,
-    energyRegenPerHour: 10,
+    energyRegenPerHour: 15,    // 15/h → full in ~6.7h (was 10/h = 10h)
     stealEnergyCost: 10,
     dogBiteEnergyCost: 20,
     maxStealPercent: 0.20,
     stealPerActionPercent: 0.05,
     dogBitePenaltyPercent: 0.05,
-    baseStealSuccessRate: 80,
+    baseStealSuccessRate: 75,  // slightly harder (was 80)
   },
 });

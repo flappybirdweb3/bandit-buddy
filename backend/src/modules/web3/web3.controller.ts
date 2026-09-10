@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards } from '@nestjs/common';
 import { Web3Service } from './web3.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -21,9 +21,14 @@ export class Web3Controller {
   @Post('sync-nft')
   async syncNft(@CurrentUser() user: User) {
     if (!user.walletAddress) {
-      return { message: 'No wallet linked' };
+      return { synced: 0, totalNftDefense: 0, dogs: [], message: 'No wallet linked' };
     }
-    await this.web3Service.syncGuardDogs(user.id, user.walletAddress);
-    return { message: 'NFT sync initiated' };
+    const result = await this.web3Service.syncGuardDogs(user.id, user.walletAddress);
+    return { ...result, message: `Synced ${result.synced} NFT dog(s)` };
+  }
+
+  @Get('nft-status')
+  async getNftStatus(@CurrentUser() user: User) {
+    return this.web3Service.getNftStatus(user.id);
   }
 }

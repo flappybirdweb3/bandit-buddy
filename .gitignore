@@ -36,3 +36,10 @@ Thumbs.db
 # Coverage
 coverage/
 lcov.info
+
+# Screenshot dumps & working files
+*.jpg
+*.jpeg
+*.docx
+redesign.md
+reqs.md

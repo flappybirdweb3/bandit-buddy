@@ -12,11 +12,18 @@ export function GameCanvas({ style }: Props) {
 
   useEffect(() => {
     if (!containerRef.current || gameRef.current) return;
+    const container = containerRef.current;
 
-    const config = createPhaserConfig(containerRef.current);
-    gameRef.current = new Phaser.Game(config);
+    // Delay one frame so Telegram WebApp.expand() has time to resize the viewport
+    // before Phaser reads window.innerWidth/innerHeight for initial canvas size.
+    const raf = requestAnimationFrame(() => {
+      if (!container || gameRef.current) return;
+      const config = createPhaserConfig(container);
+      gameRef.current = new Phaser.Game(config);
+    });
 
     return () => {
+      cancelAnimationFrame(raf);
       gameRef.current?.destroy(true);
       gameRef.current = null;
     };

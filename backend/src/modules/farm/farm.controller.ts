@@ -1,4 +1,4 @@
-import { Controller, Get, Param, ParseUUIDPipe, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, ParseUUIDPipe, UseGuards } from '@nestjs/common';
 import { FarmService } from './farm.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -14,10 +14,25 @@ export class FarmController {
     return this.farmService.getSeeds();
   }
 
+  @Get('weather/today')
+  getWeather() {
+    return this.farmService.getTodayWeather();
+  }
+
   @Get('my')
   async getMyFarm(@CurrentUser() user: User) {
     await this.farmService.ensureInitialPlots(user.id);
     return this.farmService.getFarm(user.id);
+  }
+
+  @Post('buy-plot')
+  async buyPlot(@CurrentUser() user: User) {
+    return this.farmService.buyPlot(user.id);
+  }
+
+  @Post('upgrade-plot')
+  async upgradePlot(@CurrentUser() user: User, @Body('plotId') plotId: string) {
+    return this.farmService.upgradePlot(user.id, plotId);
   }
 
   @Get(':userId')

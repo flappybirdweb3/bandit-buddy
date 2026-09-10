@@ -2,17 +2,68 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#1a4a1a" />
     <title>Barn Buddy Web3</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body, #root { width: 100%; height: 100%; overflow: hidden; background: #1a4a1a; }
-      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      html { width: 100%; height: 100%; }
+      body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      #root {
+        width: 100%;
+        height: var(--tg-viewport-height, 100dvh);
+        overflow: hidden;
+        background: #0a0a0a;
+      }
+      /* Pre-React loading screen — hidden once React mounts */
+      #bb-splash {
+        position: fixed; inset: 0; z-index: 9999;
+        background: linear-gradient(160deg, #0a1f0a 0%, #1a3a1a 40%, #1e3a5f 100%);
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+        transition: opacity 0.3s ease;
+      }
+      #bb-splash.hidden { opacity: 0; pointer-events: none; }
+      #bb-splash .mascot-ring {
+        width: 130px; height: 130px;
+        border-radius: 50%;
+        overflow: hidden;
+        position: relative;
+        flex-shrink: 0;
+        box-shadow: 0 0 0 3px rgba(74,222,128,0.35), 0 0 32px rgba(74,222,128,0.2), 0 8px 24px rgba(0,0,0,0.5);
+      }
+      #bb-splash .mascot-ring img {
+        position: absolute;
+        width: 195px;
+        left: 50%;
+        top: -8px;
+        transform: translateX(-50%);
+      }
+      @keyframes bb-bob { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+      #bb-splash .mascot-ring { animation: bb-bob 2.5s ease-in-out infinite; }
+      #bb-splash .logo { font-size: 28px; font-weight: 900; color: #4ade80; letter-spacing: -0.5px; }
+      #bb-splash .logo span { color: #fbbf24; }
+      @keyframes bb-spin { to { transform: rotate(360deg); } }
+      #bb-splash .spinner {
+        width: 28px; height: 28px;
+        border: 3px solid rgba(74,222,128,0.2);
+        border-top-color: #4ade80;
+        border-radius: 50%;
+        animation: bb-spin 0.8s linear infinite;
+      }
+      #bb-splash p { color: rgba(255,255,255,0.4); font-size: 13px; }
     </style>
   </head>
   <body>
+    <!-- Pre-React splash: visible during JS bundle download, hidden once React mounts -->
+    <div id="bb-splash">
+      <div class="mascot-ring">
+        <img src="/mascot.png" alt="Bandit Buddy" />
+      </div>
+      <div class="logo">Bandit <span>Buddy</span></div>
+      <div class="spinner"></div>
+      <p>Loading your farm…</p>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

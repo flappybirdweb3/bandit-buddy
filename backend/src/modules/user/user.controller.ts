@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Patch, Body, UseGuards, Query } from '@nestjs/common';
 import { UserService } from './user.service';
+import { Web3Service } from '../web3/web3.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from './entities/user.entity';
@@ -16,12 +17,22 @@ class UpdateWalletDto {
 export class UserController {
   constructor(
     private readonly userService: UserService,
+    private readonly web3Service: Web3Service,
     private readonly config: ConfigService,
   ) {}
 
   @Get('profile')
   async getProfile(@CurrentUser() user: User) {
     return this.userService.getProfile(user.id);
+  }
+
+  @Patch('notifications')
+  async setNotifications(
+    @CurrentUser() user: User,
+    @Body('enabled') enabled: boolean,
+  ) {
+    await this.userService.setNotifications(user.id, enabled);
+    return { enabled };
   }
 
   @Post('daily-claim')
@@ -40,12 +51,32 @@ export class UserController {
     return this.userService.getReferralInfo(user, botUsername);
   }
 
+  @Get('search')
+  async searchUsers(
+    @CurrentUser() user: User,
+    @Query('q') q: string,
+  ) {
+    return this.userService.searchUsers(user.id, q ?? '');
+  }
+
+  @Get('explore')
+  async getExploreFarms(@CurrentUser() user: User) {
+    return this.userService.getExploreFarms(user.id);
+  }
+
+  @Get('achievements')
+  async getAchievements(@CurrentUser() user: User) {
+    return this.userService.getAchievements(user.id);
+  }
+
   @Get('leaderboard')
   async getLeaderboard(
     @CurrentUser() user: User,
     @Query('limit') limit?: string,
+    @Query('category') category?: string,
   ) {
-    return this.userService.getLeaderboard(user.id, limit ? Math.min(parseInt(limit, 10), 100) : 50);
+    const cat = (['thieves', 'rich', 'streak', 'farmer'].includes(category ?? '') ? category : 'thieves') as 'thieves' | 'rich' | 'streak' | 'farmer';
+    return this.userService.getLeaderboard(user.id, limit ? Math.min(parseInt(limit, 10), 100) : 50, cat);
   }
 
   @Patch('wallet')
@@ -54,6 +85,8 @@ export class UserController {
     @Body() dto: UpdateWalletDto,
   ) {
     await this.userService.updateWalletAddress(user.id, dto.walletAddress);
+    // Fire-and-forget NFT sync so wallet linking also picks up existing NFT dogs
+    this.web3Service.syncGuardDogs(user.id, dto.walletAddress).catch(() => {});
     return { message: 'Wallet address updated' };
   }
 }

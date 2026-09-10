@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import configuration from './config/configuration';
@@ -9,13 +10,18 @@ import { UserModule } from './modules/user/user.module';
 import { FarmModule } from './modules/farm/farm.module';
 import { ActionModule } from './modules/action/action.module';
 import { Web3Module } from './modules/web3/web3.module';
+import { NotificationModule } from './modules/notification/notification.module';
+import { QuestModule } from './modules/quest/quest.module';
+import { ShopModule } from './modules/shop/shop.module';
+import { BotModule } from './modules/bot/bot.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       load: [configuration],
-      envFilePath: '../.env',
+      // Try both: project root (when running compiled from barnbuddy/) and parent (dev from backend/)
+      envFilePath: ['.env', '../.env'],
     }),
 
     // Rate limiting: default 100 req/min globally; steal endpoint overrides to 3/sec
@@ -32,12 +38,17 @@ import { Web3Module } from './modules/web3/web3.module';
       },
     ]),
 
+    ScheduleModule.forRoot(),
     DatabaseModule,
     CommonModule,
     UserModule,
     FarmModule,
     ActionModule,
     Web3Module,
+    NotificationModule,
+    QuestModule,
+    ShopModule,
+    BotModule,
   ],
   providers: [
     {

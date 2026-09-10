@@ -6,11 +6,13 @@ import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { ethers } from 'ethers';
+import { Cron } from '@nestjs/schedule';
 import { User } from '../user/entities/user.entity';
 import { NftGuardDog } from '../farm/entities/nft-guard-dog.entity';
 
 const ERC1155_ABI = [
   'function balanceOf(address account, uint256 id) view returns (uint256)',
+  'function balanceOfBatch(address[] accounts, uint256[] ids) view returns (uint256[])',
 ];
 
 const DOG_DEFENSE_MAP: Record<number, { dogType: string; defensePower: number }> = {
@@ -20,6 +22,14 @@ const DOG_DEFENSE_MAP: Record<number, { dogType: string; defensePower: number }>
   4: { dogType: 'Rottweiler', defensePower: 50 },
   5: { dogType: 'Doberman',   defensePower: 65 },
   6: { dogType: 'Pitbull',    defensePower: 80 },
+};
+
+const TOKEN_IDS = [1, 2, 3, 4, 5, 6];
+
+export type NftSyncResult = {
+  synced: number;
+  totalNftDefense: number;
+  dogs: Array<{ tokenId: number; dogType: string; defensePower: number; balance: number }>;
 };
 
 @Injectable()
@@ -75,7 +85,6 @@ export class Web3Service {
     await queryRunner.startTransaction();
 
     try {
-      // Lock user row - prevents double-spend on concurrent requests
       const lockedUser = await queryRunner.manager
         .createQueryBuilder(User, 'u')
         .where('u.id = :id', { id: user.id })
@@ -89,7 +98,6 @@ export class Web3Service {
 
       const currentNonce = lockedUser.nonce;
 
-      // Atomically deduct gold and increment nonce
       await queryRunner.manager
         .createQueryBuilder()
         .update(User)
@@ -100,14 +108,11 @@ export class Web3Service {
         .where('id = :id', { id: user.id })
         .execute();
 
-      // Generate ECDSA signature matching Solidity abi.encodePacked + keccak256
       const amountWei = ethers.parseUnits(amountToClaim.toString(), 18);
       const messageHash = ethers.solidityPackedKeccak256(
         ['address', 'uint256', 'uint256'],
         [user.walletAddress, amountWei, currentNonce],
       );
-      // signMessage auto-prepends "\x19Ethereum Signed Message:\n32"
-      // matching MessageHashUtils.toEthSignedMessageHash in Solidity
       const signature = await this.adminWallet.signMessage(ethers.getBytes(messageHash));
 
       await queryRunner.commitTransaction();
@@ -128,52 +133,76 @@ export class Web3Service {
     }
   }
 
-  async syncGuardDogs(userId: string, walletAddress: string): Promise<void> {
+  async syncGuardDogs(userId: string, walletAddress: string): Promise<NftSyncResult> {
     if (!this.provider) {
       this.logger.warn('Web3 provider not configured - skipping NFT sync');
-      return;
+      return { synced: 0, totalNftDefense: 0, dogs: [] };
     }
 
     const nftContractAddress = this.config.get<string>('web3.nftContractAddress') ?? '';
     if (!nftContractAddress || nftContractAddress === '0x0000000000000000000000000000000000000000') {
       this.logger.warn('NFT contract address not configured');
-      return;
+      return { synced: 0, totalNftDefense: 0, dogs: [] };
     }
 
     try {
       const contract = new ethers.Contract(nftContractAddress, ERC1155_ABI, this.provider);
+
+      // Single RPC call for all 6 breeds at once
+      const accounts = TOKEN_IDS.map(() => walletAddress);
+      const balances: bigint[] = await contract.balanceOfBatch(accounts, TOKEN_IDS);
+
+      const ownedDogs = TOKEN_IDS
+        .map((tokenId, idx) => ({ tokenId, balance: Number(balances[idx]) }))
+        .filter(({ balance }) => balance > 0)
+        .map(({ tokenId, balance }) => ({
+          tokenId,
+          balance,
+          dogType: DOG_DEFENSE_MAP[tokenId].dogType,
+          defensePower: DOG_DEFENSE_MAP[tokenId].defensePower,
+        }));
+
       const queryRunner = this.dataSource.createQueryRunner();
       await queryRunner.connect();
       await queryRunner.startTransaction();
 
       try {
-        await queryRunner.manager.update(NftGuardDog, { ownerId: userId }, { isActive: false });
+        // Only deactivate NFT-sourced dogs — shop dogs (source='shop') are NOT touched
+        await queryRunner.manager.update(
+          NftGuardDog,
+          { ownerId: userId, source: 'nft' },
+          { isActive: false },
+        );
 
-        for (const [tokenIdStr, dogInfo] of Object.entries(DOG_DEFENSE_MAP)) {
-          const tokenId = parseInt(tokenIdStr, 10);
-          const balance: bigint = await contract.balanceOf(walletAddress, tokenId);
+        for (const dog of ownedDogs) {
+          const existing = await queryRunner.manager.findOne(NftGuardDog, {
+            where: { ownerId: userId, tokenId: dog.tokenId, source: 'nft' },
+          });
 
-          if (balance > 0n) {
-            const existing = await queryRunner.manager.findOne(NftGuardDog, {
-              where: { ownerId: userId, tokenId },
+          if (existing) {
+            await queryRunner.manager.update(NftGuardDog, { id: existing.id }, {
+              isActive: true,
+              defensePower: dog.defensePower,
+              dogType: dog.dogType,
             });
-
-            if (existing) {
-              await queryRunner.manager.update(NftGuardDog, existing.id, { isActive: true });
-            } else {
-              await queryRunner.manager.insert(NftGuardDog, {
-                ownerId: userId,
-                tokenId,
-                dogType: dogInfo.dogType,
-                defensePower: dogInfo.defensePower,
-                isActive: true,
-              });
-            }
+          } else {
+            await queryRunner.manager.insert(NftGuardDog, {
+              ownerId: userId,
+              tokenId: dog.tokenId,
+              dogType: dog.dogType,
+              defensePower: dog.defensePower,
+              isActive: true,
+              source: 'nft',
+            });
           }
         }
 
         await queryRunner.commitTransaction();
-        this.logger.log(`NFT sync complete for ${walletAddress}`);
+
+        const totalNftDefense = ownedDogs.reduce((sum, d) => sum + d.defensePower, 0);
+        this.logger.log(`NFT sync: user=${userId} owned=${ownedDogs.length} totalDefense=${totalNftDefense}`);
+
+        return { synced: ownedDogs.length, totalNftDefense, dogs: ownedDogs };
       } catch (err) {
         await queryRunner.rollbackTransaction();
         throw err;
@@ -182,6 +211,51 @@ export class Web3Service {
       }
     } catch (err) {
       this.logger.error(`NFT sync failed for ${walletAddress}: ${(err as Error).message}`);
+      return { synced: 0, totalNftDefense: 0, dogs: [] };
+    }
+  }
+
+  async getNftStatus(userId: string) {
+    const dogs = await this.dataSource.manager.find(NftGuardDog, {
+      where: { ownerId: userId, source: 'nft', isActive: true },
+      order: { defensePower: 'DESC' },
+    });
+
+    const ownedBreeds = dogs.map((d) => ({
+      tokenId: d.tokenId,
+      dogType: d.dogType,
+      defensePower: d.defensePower,
+    }));
+
+    return {
+      ownedBreeds,
+      totalNftDefense: dogs.reduce((sum, d) => sum + d.defensePower, 0),
+      breedCount: dogs.length,
+    };
+  }
+
+  // Background sync: every 30 minutes, re-sync the 50 most recently active wallet users
+  @Cron('0 */30 * * * *')
+  async scheduledNftSync(): Promise<void> {
+    if (!this.provider) return;
+
+    const nftContractAddress = this.config.get<string>('web3.nftContractAddress') ?? '';
+    if (!nftContractAddress || nftContractAddress === '0x0000000000000000000000000000000000000000') return;
+
+    const users = await this.dataSource.manager
+      .createQueryBuilder(User, 'u')
+      .where('u.wallet_address IS NOT NULL')
+      .orderBy('u.updated_at', 'DESC')
+      .limit(50)
+      .getMany();
+
+    if (users.length === 0) return;
+    this.logger.log(`Scheduled NFT sync: processing ${users.length} users`);
+
+    for (const user of users) {
+      if (user.walletAddress) {
+        await this.syncGuardDogs(user.id, user.walletAddress);
+      }
     }
   }
 }

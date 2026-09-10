@@ -1,24 +1,31 @@
-import { X, Coins, ShieldAlert } from 'lucide-react';
+import { X, Coins, ShieldAlert, Bug, Leaf, Droplet } from 'lucide-react';
+import { SEED_EMOJI } from "@/constants/seeds";
 import { useHarvest } from '@/hooks/usePlotActions';
+import { eventBus } from '@/game/EventBus';
 import type { FarmPlot } from '@/types/game.types';
 
-interface Props { plot: FarmPlot; onClose: () => void }
+interface Props { plot: FarmPlot; plotIndex: number; onClose: () => void }
 
-const SEED_EMOJI: Record<string, string> = {
-  wheat: '🌾', carrot: '🥕', corn: '🌽', tomato: '🍅', pumpkin: '🎃',
-};
-
-export function HarvestModal({ plot, onClose }: Props) {
+export function HarvestModal({ plot, plotIndex, onClose }: Props) {
   const harvest = useHarvest();
 
-  const netYield = plot.seed ? Math.max(0, plot.seed.baseYield - plot.totalStolen) : 0;
-  const emoji = plot.seed ? (SEED_EMOJI[plot.seed.iconKey] ?? '🌿') : '🌿';
-  const stolenPct = plot.seed
-    ? Math.round((plot.totalStolen / plot.seed.baseYield) * 100)
-    : 0;
+  const baseYield  = plot.seed?.baseYield ?? 0;
+  let   infestMult = 1.0;
+  if (plot.hasBugs)  infestMult -= 0.20;
+  if (plot.hasWeeds) infestMult -= 0.30;
+  infestMult = Math.max(0, infestMult);
+  const dryMult    = plot.hasDrySoil ? 0.85 : 1.0;
+  const afterInfest = baseYield * infestMult * dryMult;
+  const netYield   = Math.max(0, afterInfest - plot.totalStolen);
+  const emoji      = plot.seed ? (SEED_EMOJI[plot.seed.iconKey] ?? '🌿') : '🌿';
+  const stolenPct  = baseYield > 0 ? Math.round((plot.totalStolen / baseYield) * 100) : 0;
+  const hasDeductions = plot.hasBugs || plot.hasWeeds || plot.hasDrySoil || plot.totalStolen > 0;
 
   const handleHarvest = async () => {
     await harvest.mutateAsync(plot.id);
+    eventBus.emit('play-sound', 'harvest');
+    eventBus.emit('harvest-animation', { plotIndex, gold: netYield });
+    setTimeout(() => eventBus.emit('play-sound', 'coin'), 180);
     onClose();
   };
 
@@ -40,17 +47,51 @@ export function HarvestModal({ plot, onClose }: Props) {
         <h2 className="text-white font-black text-xl mb-1">{plot.seed?.name}</h2>
         <p className="text-white/40 text-xs mb-5">Ready to harvest!</p>
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 gap-3 mb-5">
-          <div className="glass-gold rounded-2xl p-3">
-            <div className="text-amber-300 font-black text-xl">+{plot.seed?.baseYield.toFixed(0)}</div>
-            <div className="text-white/40 text-[10px] mt-0.5">Full Yield (G)</div>
-          </div>
-          <div className="glass-red rounded-2xl p-3">
-            <div className="text-red-400 font-black text-xl">-{plot.totalStolen.toFixed(0)}</div>
-            <div className="text-white/40 text-[10px] mt-0.5">Stolen ({stolenPct}%)</div>
+        {/* Base yield */}
+        <div className="glass-gold rounded-2xl p-3 mb-3">
+          <div className="flex items-center justify-between">
+            <span className="text-white/50 text-xs">Base yield</span>
+            <span className="text-amber-300 font-black text-lg">+{baseYield.toFixed(0)}G</span>
           </div>
         </div>
+
+        {/* Deductions */}
+        {hasDeductions && (
+          <div className="glass rounded-2xl p-3 mb-3 flex flex-col gap-2">
+            {plot.hasBugs && (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-red-400 text-xs">
+                  <Bug size={11} /> Bugs (−20%)
+                </div>
+                <span className="text-red-400 font-bold text-xs">−{(baseYield * 0.20).toFixed(0)}G</span>
+              </div>
+            )}
+            {plot.hasWeeds && (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-lime-400 text-xs">
+                  <Leaf size={11} /> Weeds (−30%)
+                </div>
+                <span className="text-lime-400 font-bold text-xs">−{(baseYield * 0.30).toFixed(0)}G</span>
+              </div>
+            )}
+            {plot.hasDrySoil && (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-orange-400 text-xs">
+                  <Droplet size={11} /> Dry soil (−15%)
+                </div>
+                <span className="text-orange-400 font-bold text-xs">−{(baseYield * 0.15).toFixed(0)}G</span>
+              </div>
+            )}
+            {plot.totalStolen > 0 && (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-red-400 text-xs">
+                  <ShieldAlert size={11} /> Stolen ({stolenPct}%)
+                </div>
+                <span className="text-red-400 font-bold text-xs">−{plot.totalStolen.toFixed(0)}G</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Net yield highlight */}
         <div className="glass-green rounded-2xl py-4 px-6 mb-5 flex items-center justify-center gap-3">

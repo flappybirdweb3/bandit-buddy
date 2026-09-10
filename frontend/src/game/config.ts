@@ -8,7 +8,7 @@ export function createPhaserConfig(parent: HTMLElement): Phaser.Types.Core.GameC
     parent,
     width: window.innerWidth,
     height: window.innerHeight,
-    backgroundColor: '#1a4a1a',
+    backgroundColor: '#0d2b0d',
     scene: [BootScene, MainFarmScene],
     scale: {
       mode: Phaser.Scale.RESIZE,

@@ -27,11 +27,26 @@ export class FarmPlot {
   @Column({ type: 'timestamp', nullable: true, name: 'harvestable_at' })
   harvestableAt: Date | null;
 
+  @Column({ type: 'int', default: 1 })
+  level: number;
+
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0, name: 'total_stolen' })
   totalStolen: number;
 
   @Column({ type: 'timestamp', nullable: true, name: 'last_stolen_at' })
   lastStolenAt: Date | null;
+
+  @Column({ type: 'boolean', default: false })
+  fertilized: boolean;
+
+  @Column({ type: 'boolean', default: false, name: 'has_bugs' })
+  hasBugs: boolean;
+
+  @Column({ type: 'boolean', default: false, name: 'has_weeds' })
+  hasWeeds: boolean;
+
+  @Column({ type: 'timestamp', nullable: true, name: 'last_watered_at' })
+  lastWateredAt: Date | null;
 
   @ManyToOne(() => User, (user) => user.farmPlots)
   @JoinColumn({ name: 'user_id' })

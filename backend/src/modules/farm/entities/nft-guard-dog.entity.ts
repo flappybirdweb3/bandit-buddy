@@ -23,6 +23,9 @@ export class NftGuardDog {
   @Column({ type: 'boolean', default: true, name: 'is_active' })
   isActive: boolean;
 
+  @Column({ type: 'varchar', length: 20, default: 'nft' })
+  source: string; // 'nft' | 'shop'
+
   @ManyToOne(() => User, (user) => user.guardDogs)
   @JoinColumn({ name: 'owner_id' })
   owner: User;

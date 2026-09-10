@@ -1,30 +1,60 @@
-import { useState } from 'react';
-import { X, Coins, Zap, Flame, CheckCircle } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { X, Coins, Zap, Flame, CheckCircle, Clock } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
+import { eventBus } from '@/game/EventBus';
 import type { DailyClaimResult } from '@/types/game.types';
 
 interface Props {
   currentStreak: number;
+  canClaim: boolean;
+  nextClaimAt: string | null;
   onClose: () => void;
 }
 
-const REWARDS = [50, 75, 100, 150, 200, 300, 500];
-const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+// Must match backend: user.service.ts DAILY_REWARDS
+const REWARDS = [120, 200, 300, 450, 650, 950, 1500];
 
-export function DailyRewardModal({ currentStreak, onClose }: Props) {
+function useCountdown(targetIso: string | null) {
+  const [display, setDisplay] = useState('');
+
+  useEffect(() => {
+    if (!targetIso) { setDisplay(''); return; }
+
+    const tick = () => {
+      const ms = new Date(targetIso).getTime() - Date.now();
+      if (ms <= 0) { setDisplay('Ready!'); return; }
+      const h = Math.floor(ms / 3_600_000);
+      const m = Math.floor((ms % 3_600_000) / 60_000);
+      setDisplay(h > 0 ? `${h}h ${m}m` : `${m}m`);
+    };
+
+    tick();
+    const id = setInterval(tick, 30_000);
+    return () => clearInterval(id);
+  }, [targetIso]);
+
+  return display;
+}
+
+export function DailyRewardModal({ currentStreak, canClaim, nextClaimAt, onClose }: Props) {
   const queryClient = useQueryClient();
   const [result, setResult] = useState<DailyClaimResult | null>(null);
+  const countdown = useCountdown(canClaim ? null : nextClaimAt);
 
   const { mutate: claim, isPending } = useMutation({
     mutationFn: api.claimDaily,
     onSuccess: (data) => {
       setResult(data);
+      eventBus.emit('play-sound', 'daily');
       queryClient.invalidateQueries({ queryKey: ['profile'] });
     },
   });
 
-  const nextDay = (currentStreak % 7) + 1; // 1-indexed day about to be claimed
+  // cycleDay is which slot in the 7-day cycle we're on (0-based)
+  // currentStreak is the streak BEFORE today's claim
+  const cycleDay = currentStreak % 7; // 0-based slot about to be claimed
+  const nextDayNum = cycleDay + 1;    // 1-based for display
 
   return (
     <div className="fixed inset-0 z-[100] flex items-end justify-center" onClick={result ? onClose : undefined}>
@@ -51,42 +81,44 @@ export function DailyRewardModal({ currentStreak, onClose }: Props) {
           </button>
         </div>
 
-        {/* 7-day grid */}
+        {/* 7-day cycle grid */}
         <div className="grid grid-cols-7 gap-1.5 mb-5">
           {REWARDS.map((gold, i) => {
-            const dayNum = i + 1;
-            const isDone = dayNum <= currentStreak;
-            const isNext = dayNum === nextDay;
-            const isMax = dayNum === 7;
+            // For streak display: completed slots are those already done in the current cycle
+            const completedInCycle = currentStreak % 7;
+            const isDone = canClaim ? i < completedInCycle : i <= completedInCycle - 1 + (result ? 1 : 0);
+            const isNext = canClaim && i === completedInCycle;
+            const isClaimed = !canClaim && i === completedInCycle - 1 + (result ? 1 : 0);
+            const isMax = i === 6;
 
             return (
               <div
                 key={i}
                 className={[
                   'flex flex-col items-center rounded-xl py-2 px-1 text-center transition-all',
-                  isDone ? 'bg-green-500/20 border border-green-500/40' :
+                  isDone || isClaimed ? 'bg-green-500/20 border border-green-500/40' :
                   isNext ? (isMax ? 'glass-gold border border-amber-400/60 scale-105' : 'glass-purple border border-violet-500/60 scale-105') :
                   'bg-white/5',
                 ].join(' ')}
               >
-                <div className="text-[9px] text-white/40 font-semibold mb-1">{DAY_LABELS[i]}</div>
-                {isDone
+                <div className="text-[9px] text-white/40 font-semibold mb-1">D{i + 1}</div>
+                {isDone || isClaimed
                   ? <CheckCircle size={14} className="text-green-400 my-0.5" />
                   : <span className={`text-base leading-none ${isMax ? 'text-amber-300' : isNext ? 'text-violet-300' : 'text-white/30'}`}>
                       {isMax ? '👑' : '🪙'}
                     </span>
                 }
                 <div className={`text-[10px] font-black mt-1 ${
-                  isDone ? 'text-green-400' : isNext ? (isMax ? 'text-amber-300' : 'text-violet-300') : 'text-white/30'
+                  isDone || isClaimed ? 'text-green-400' : isNext ? (isMax ? 'text-amber-300' : 'text-violet-300') : 'text-white/30'
                 }`}>
-                  {gold >= 1000 ? `${gold / 100 / 10}k` : `${gold}G`}
+                  {gold >= 1000 ? `${gold / 1000}k` : `${gold}G`}
                 </div>
               </div>
             );
           })}
         </div>
 
-        {/* Result panel (after claim) */}
+        {/* Result panel (after successful claim) */}
         {result ? (
           <div className="glass-gold rounded-2xl p-5 mb-4 text-center">
             <div className="text-4xl mb-2">🎉</div>
@@ -102,12 +134,12 @@ export function DailyRewardModal({ currentStreak, onClose }: Props) {
             </div>
             {result.isMaxStreak && (
               <div className="mt-3 text-amber-400 text-xs font-bold">
-                👑 Max streak bonus! Come back tomorrow to maintain it.
+                👑 Cycle complete! Full energy restored.
               </div>
             )}
             {!result.isMaxStreak && (
               <div className="mt-3 text-white/40 text-xs">
-                Tomorrow: <span className="text-violet-300 font-bold">{result.nextStreakReward}G</span>
+                Tomorrow: <span className="text-violet-300 font-bold">+{result.nextStreakReward}G</span>
               </div>
             )}
             <button
@@ -117,21 +149,21 @@ export function DailyRewardModal({ currentStreak, onClose }: Props) {
               Awesome!
             </button>
           </div>
-        ) : (
+        ) : canClaim ? (
           <>
             {/* Next reward preview */}
             <div className="glass rounded-2xl p-4 mb-4 flex items-center gap-3">
               <div className="w-12 h-12 rounded-xl bg-violet-500/20 flex items-center justify-center flex-shrink-0 text-2xl">
-                {nextDay === 7 ? '👑' : '🪙'}
+                {nextDayNum === 7 ? '👑' : '🪙'}
               </div>
               <div className="flex-1">
-                <div className="text-white/40 text-[10px] mb-1">TODAY'S REWARD (Day {nextDay})</div>
+                <div className="text-white/40 text-[10px] mb-1">TODAY'S REWARD (Day {nextDayNum} of 7)</div>
                 <div className="flex items-center gap-3">
                   <span className="flex items-center gap-1 text-amber-300 font-black text-lg">
-                    <Coins size={16} /> {REWARDS[nextDay - 1]}G
+                    <Coins size={16} /> {REWARDS[cycleDay]}G
                   </span>
                   <span className="flex items-center gap-1 text-green-300 font-bold text-sm">
-                    <Zap size={13} /> +{nextDay === 7 ? 100 : 50} Energy
+                    <Zap size={13} /> +{cycleDay === 6 ? 100 : 50} Energy
                   </span>
                 </div>
               </div>
@@ -146,6 +178,30 @@ export function DailyRewardModal({ currentStreak, onClose }: Props) {
               {isPending ? 'Claiming…' : 'Claim Daily Reward'}
             </button>
           </>
+        ) : (
+          /* Already claimed today — show countdown */
+          <div className="glass rounded-2xl p-5 text-center flex flex-col items-center gap-3">
+            <div className="w-14 h-14 rounded-2xl bg-green-500/20 border border-green-500/30 flex items-center justify-center">
+              <CheckCircle size={28} className="text-green-400" />
+            </div>
+            <div>
+              <p className="text-white font-black text-base">Already claimed today!</p>
+              <p className="text-white/40 text-sm mt-1">Keep your streak alive — come back in:</p>
+            </div>
+            <div className="glass-gold rounded-2xl px-6 py-3 flex items-center gap-2">
+              <Clock size={16} className="text-amber-400" />
+              <span className="text-amber-300 font-black text-xl">{countdown || '…'}</span>
+            </div>
+            <p className="text-white/25 text-xs">
+              Next: <span className="text-violet-300 font-bold">+{REWARDS[nextDayNum % 7]}G</span> (Day {nextDayNum % 7 + 1} of 7)
+            </p>
+            <button
+              onClick={onClose}
+              className="w-full glass py-3 rounded-2xl text-white/60 font-bold text-sm active:scale-95 transition-all"
+            >
+              Close
+            </button>
+          </div>
         )}
       </div>
     </div>

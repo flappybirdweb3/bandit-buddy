@@ -19,9 +19,10 @@ export function useHarvest() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (plotId: string) => api.harvest(plotId),
-    onSuccess: () => {
+    onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['myFarm'] });
       qc.invalidateQueries({ queryKey: ['profile'] });
+      if (res.levelUp) eventBus.emit('level-up', { newLevel: res.newLevel });
     },
   });
 }

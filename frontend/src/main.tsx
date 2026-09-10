@@ -2,15 +2,51 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
 import WebApp from '@twa-dev/sdk';
-import { Web3AppProvider } from '@/providers/WagmiProvider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GameProvider } from '@/providers/GameProvider';
 import { App } from './App';
+
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { staleTime: 10_000, retry: 1 } },
+});
 
 // Initialize Telegram Mini App
 WebApp.ready();
 WebApp.expand();
 WebApp.setHeaderColor('#0a0a0a');
 WebApp.setBackgroundColor('#0a0a0a');
+
+// Sync Telegram viewport height → CSS variable so #root always fills it
+function syncViewportHeight() {
+  const h = WebApp.viewportHeight || window.innerHeight;
+  const sh = WebApp.viewportStableHeight || h;
+  document.documentElement.style.setProperty('--tg-viewport-height', `${h}px`);
+  document.documentElement.style.setProperty('--tg-viewport-stable-height', `${sh}px`);
+}
+syncViewportHeight();
+WebApp.onEvent('viewportChanged', syncViewportHeight);
+
+// Sync Telegram safe area → CSS variable so HUD clears the Telegram header bar
+function syncSafeArea() {
+  const tg = WebApp as any;
+  // contentSafeAreaInset.top (Telegram 10+) already includes header bar
+  const contentTop: unknown = tg.contentSafeAreaInset?.top;
+  // safeAreaInset.top (Telegram 8+) is device-only (notch/status bar)
+  const safeTop: unknown = tg.safeAreaInset?.top;
+
+  let topPx: number;
+  if (typeof contentTop === 'number' && contentTop > 0) {
+    topPx = contentTop;
+  } else if (typeof safeTop === 'number' && safeTop >= 0) {
+    topPx = safeTop + 50; // add ~50px Telegram header bar
+  } else {
+    topPx = 90; // safe fallback: status bar + Telegram header on most iPhones
+  }
+  document.documentElement.style.setProperty('--tg-safe-area-inset-top', `${topPx}px`);
+}
+syncSafeArea();
+WebApp.onEvent('safeAreaChanged' as Parameters<typeof WebApp.onEvent>[0], syncSafeArea);
+WebApp.onEvent('contentSafeAreaChanged' as Parameters<typeof WebApp.onEvent>[0], syncSafeArea);
 
 // ── Telegram WebView wallet deep-link patch ──────────────────────────────────
 // iOS Telegram WebView blocks ALL custom URL schemes (metamask://, trust://, wc://).
@@ -67,12 +103,19 @@ if ((window as any).Telegram?.WebApp) {
 }
 // ────────────────────────────────────────────────────────────────────────────
 
+// Hide pre-React splash screen once JS is ready to render
+const splash = document.getElementById('bb-splash');
+if (splash) {
+  splash.classList.add('hidden');
+  setTimeout(() => splash.remove(), 350);
+}
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <Web3AppProvider>
+    <QueryClientProvider client={queryClient}>
       <GameProvider>
         <App />
       </GameProvider>
-    </Web3AppProvider>
+    </QueryClientProvider>
   </React.StrictMode>,
 );

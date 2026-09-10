@@ -26,6 +26,9 @@ export class User {
   @Column({ type: 'int', default: 100 })
   energy: number;
 
+  @Column({ type: 'int', default: 100, name: 'max_energy' })
+  maxEnergy: number;
+
   @Column({ type: 'int', default: 50, name: 'trust_score' })
   trustScore: number;
 
@@ -43,6 +46,47 @@ export class User {
 
   @Column({ type: 'int', default: 0, name: 'daily_streak' })
   dailyStreak: number;
+
+  @Column({ type: 'boolean', default: true, name: 'notifications_enabled' })
+  notificationsEnabled: boolean;
+
+  // Shop: 3-tier fertilizer charges (each reduces grow time)
+  @Column({ type: 'int', default: 0, name: 'normal_fert_charges' })
+  normalFertCharges: number;
+
+  @Column({ type: 'int', default: 0, name: 'super_fert_charges' })
+  superFertCharges: number;
+
+  @Column({ type: 'int', default: 0, name: 'advanced_fert_charges' })
+  advancedFertCharges: number;
+
+  // Leaderboard: cumulative gold stolen from others
+  @Column({ type: 'decimal', precision: 20, scale: 2, default: 0, name: 'gold_stolen' })
+  goldStolen: number;
+
+  // Achievement counters
+  @Column({ type: 'int', default: 0, name: 'total_harvests' })
+  totalHarvests: number;
+
+  @Column({ type: 'int', default: 0, name: 'total_plants' })
+  totalPlants: number;
+
+  @Column({ type: 'int', default: 0, name: 'total_attacks' })
+  totalAttacks: number;
+
+  @Column({ type: 'int', default: 0, name: 'total_waters' })
+  totalWaters: number;
+
+  // Anti-bot: daily steal quota tracking
+  @Column({ type: 'int', default: 0, name: 'daily_steal_count' })
+  dailyStealCount: number;
+
+  @Column({ type: 'varchar', length: 10, nullable: true, name: 'last_steal_date' })
+  lastStealDate: string | null; // 'YYYY-MM-DD'
+
+  // Anti-bot: consecutive failure tracking (for trust score decay)
+  @Column({ type: 'int', default: 0, name: 'consecutive_steal_failures' })
+  consecutiveStealFailures: number;
 
   @ManyToOne(() => User, (u) => u.referrals, { nullable: true })
   @JoinColumn({ name: 'referred_by' })
