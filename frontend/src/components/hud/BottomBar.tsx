@@ -66,10 +66,11 @@ export function BottomBar() {
   });
   const stealableCount = exploreFarms.length;
 
-  // Sync pre-selected seed from event bus
+  // Sync pre-selected seed from event bus + HUD Claim badge shortcut
   useEffect(() => {
-    const unsub = eventBus.on('seed-preselected', (data) => setSelectedSeed(data));
-    return unsub;
+    const unsubSeed  = eventBus.on('seed-preselected', (data) => setSelectedSeed(data));
+    const unsubClaim = eventBus.on('show-claim', () => setShowClaim(true));
+    return () => { unsubSeed(); unsubClaim(); };
   }, []);
 
   const handleTool = (id: ToolId) => {

@@ -184,17 +184,17 @@ export function App() {
     return () => { unsubPlot(); unsubFriends(); unsubBuyPlot(); unsubVisit(); unsubBack(); unsubTool(); unsubFertilizer(); };
   }, [myFarm, friendFarm, visitState, returnToOwnFarm, preSelectedSeed]);
 
-  // Block Phaser input whenever a React modal is open.
+  // Block Phaser input whenever any React modal/overlay is open.
   // Delay unblocking by 200ms to prevent touch bleedthrough — the finger
   // that closed the modal must fully lift before Phaser can receive events.
   useEffect(() => {
-    if (modal !== null) {
+    if (modal !== null || showSetup || showTutorial) {
       eventBus.emit('ui-overlay', true);
       return;
     }
     const t = setTimeout(() => eventBus.emit('ui-overlay', false), 200);
     return () => clearTimeout(t);
-  }, [modal]);
+  }, [modal, showSetup, showTutorial]);
 
   const activeFarm = visitState ? friendFarm : myFarm;
 

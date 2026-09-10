@@ -6,6 +6,7 @@ type EventMap = {
   'profile-updated': UserProfile;
   'scene-ready': string;
   'show-friends': void;
+  'show-claim': void;
   'visit-farm': { userId: string; username: string };
   'back-to-my-farm': void;
   'steal-animation':   { success: boolean; plotIndex: number };

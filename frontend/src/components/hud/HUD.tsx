@@ -133,16 +133,16 @@ export function HUD() {
   const prevUnread  = useRef<number>(0);
   const prevEnergy  = useRef<number | null>(null);
 
-  // Block Phaser input whenever a HUD modal is open
+  // Block Phaser input whenever a HUD modal or popup is open
   useEffect(() => {
-    const open = showSettings || showNotifications || showAchievements;
+    const open = showSettings || showNotifications || showAchievements || showEnergyPopup;
     if (open) {
       eventBus.emit('ui-overlay', true);
       return;
     }
     const t = setTimeout(() => eventBus.emit('ui-overlay', false), 200);
     return () => clearTimeout(t);
-  }, [showSettings, showNotifications, showAchievements]);
+  }, [showSettings, showNotifications, showAchievements, showEnergyPopup]);
 
   const { data: inbox } = useQuery({
     queryKey: ['inbox'],
@@ -270,10 +270,13 @@ export function HUD() {
             </span>
           </div>
           {profile.goldBalance >= 100 && (
-            <div className="glass-purple rounded-xl flex items-center gap-1 px-2 py-1.5 animate-pulse pointer-events-auto">
+            <button
+              className="glass-purple rounded-xl flex items-center gap-1 px-2 py-1.5 animate-pulse pointer-events-auto active:scale-95 transition-all"
+              onClick={() => eventBus.emit('show-claim')}
+            >
               <Gem size={11} className="text-violet-300" />
               <span className="text-violet-300 text-[10px] font-bold leading-none">Claim</span>
-            </div>
+            </button>
           )}
         </div>
 
