@@ -6,6 +6,8 @@ import { useClaimTokens, getWalletBnbBalance } from '@/hooks/useClaimTokens';
 import type { ClaimStep } from '@/hooks/useClaimTokens';
 import { getStoredWalletPk } from '@/hooks/useAutoWallet';
 import { useGame } from '@/providers/GameProvider';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '@/api/client';
 
 interface Props { onClose: () => void }
 
@@ -55,6 +57,13 @@ export function ClaimModal({ onClose }: Props) {
   const { claim, step, txHash, error, reset } = useClaimTokens();
   const [amount, setAmount] = useState('');
   const [bnbBalance, setBnbBalance] = useState<bigint | null>(null);
+
+  const { data: exchangeRate } = useQuery({
+    queryKey: ['exchange-rate'],
+    queryFn: api.getExchangeRate,
+    staleTime: 5 * 60 * 1000,
+  });
+  const goldPerFarm = exchangeRate?.goldPerFarm ?? 1;
 
   const pk = getStoredWalletPk();
   const address = pk ? privateKeyToAccount(pk).address : null;
@@ -158,7 +167,9 @@ export function ClaimModal({ onClose }: Props) {
               <ArrowRight size={12} className="text-white/30" />
               <span className="text-violet-300 font-bold text-sm">1 $FARM</span>
             </div>
-            <p className="text-white/30 text-[10px]">1:1 exchange rate</p>
+            <p className="text-white/30 text-[10px]">
+              {goldPerFarm === 1 ? '1:1 rate' : `${goldPerFarm.toFixed(2)} GOLD = 1 $FARM`}
+            </p>
           </div>
         </div>
 

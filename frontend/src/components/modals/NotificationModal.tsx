@@ -95,10 +95,11 @@ const RAID_META: Record<RaidScenario, { emoji: string; color: string; bg: string
   defend_win:  { emoji: '🛡️', color: 'text-blue-300',   bg: 'bg-blue-500/10',   border: 'border-blue-400/25',   label: (u) => `@${u} was repelled`,     amountPrefix: '',  amountColor: 'text-blue-400'  },
 };
 
-function ActivityCard({ entry }: { entry: ActivityEntry }) {
+function ActivityCard({ entry, onReveal }: { entry: ActivityEntry; onReveal?: (id: string) => void }) {
   const scenario = getRaidScenario(entry);
   const meta = RAID_META[scenario];
   const amtStr = entry.amount > 0 ? `${meta.amountPrefix}${entry.amount.toFixed(2)}G` : null;
+  const showReveal = entry.role === 'defender' && entry.success && entry.isAnonymous;
 
   return (
     <div className={`rounded-2xl border p-3.5 flex gap-3 ${meta.bg} ${meta.border}`}>
@@ -108,12 +109,20 @@ function ActivityCard({ entry }: { entry: ActivityEntry }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-2">
           <p className={`text-sm font-bold leading-tight ${meta.color}`}>
-            {meta.label(entry.otherUsername)}
+            {meta.label(entry.isAnonymous ? '???' : entry.otherUsername)}
           </p>
           <span className="text-white/25 text-[10px] flex-shrink-0">{timeAgo(entry.createdAt)}</span>
         </div>
         {amtStr && (
           <p className={`text-xs font-black mt-1 ${meta.amountColor}`}>{amtStr}</p>
+        )}
+        {showReveal && onReveal && (
+          <button
+            onClick={() => onReveal(entry.id)}
+            className="mt-2 text-[10px] font-bold text-amber-400 border border-amber-400/40 rounded-lg px-2 py-0.5 hover:bg-amber-400/10 transition-colors"
+          >
+            🔍 Reveal Thief (1 Magnifying Glass)
+          </button>
         )}
       </div>
     </div>
@@ -147,6 +156,7 @@ function RaidStats({ entries }: { entries: ActivityEntry[] }) {
 // ── Main modal ───────────────────────────────────────────────────
 export function NotificationModal({ onClose }: Props) {
   const [tab, setTab] = useState<Tab>('inbox');
+  const [revealResult, setRevealResult] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const { data: inbox, isLoading: inboxLoading } = useQuery({
@@ -161,6 +171,15 @@ export function NotificationModal({ onClose }: Props) {
     queryFn: api.getActivity,
     staleTime: 20_000,
     enabled: tab === 'raids',
+  });
+
+  const revealMutation = useMutation({
+    mutationFn: (stealLogId: string) => api.revealThief(stealLogId),
+    onSuccess: (data) => {
+      setRevealResult(`🔍 Thief revealed: @${data.thiefUsername} — stole ${data.stolenAmount.toFixed(2)} GOLD`);
+      queryClient.invalidateQueries({ queryKey: ['activity'] });
+    },
+    onError: (err: Error) => setRevealResult(`❌ ${err.message}`),
   });
 
   const { mutate: markRead } = useMutation({
@@ -294,7 +313,18 @@ export function NotificationModal({ onClose }: Props) {
                   <p className="text-white/20 text-xs">Go steal some crops! 🥷</p>
                 </div>
               )}
-              {activity.map((e) => <ActivityCard key={e.id} entry={e} />)}
+              {revealResult && (
+                <div className="mx-5 mb-3 rounded-xl bg-amber-500/10 border border-amber-400/30 px-3 py-2 text-xs text-amber-300">
+                  {revealResult}
+                </div>
+              )}
+              {activity.map((e) => (
+                <ActivityCard
+                  key={e.id}
+                  entry={e}
+                  onReveal={(id) => revealMutation.mutate(id)}
+                />
+              ))}
             </>
           )}
         </div>

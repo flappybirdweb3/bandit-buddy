@@ -8,11 +8,16 @@ import { FarmPlot } from '../farm/entities/farm-plot.entity';
 import { SeedConfig } from '../farm/entities/seed-config.entity';
 import { StealLog } from '../farm/entities/steal-log.entity';
 import { NftGuardDog } from '../farm/entities/nft-guard-dog.entity';
+import { FarmBuilding } from '../farm/entities/farm-building.entity';
 import { User } from '../user/entities/user.entity';
-import { PlantDto, HarvestDto, StealDto } from './dto/action.dto';
+import { UserItem } from '../user/entities/user-item.entity';
+import { PlantDto, HarvestDto, StealDto, RevealThiefDto } from './dto/action.dto';
 import { NotificationService } from '../notification/notification.service';
 import { QuestService } from '../quest/quest.service';
 import { UPGRADE_MULTIPLIERS } from '../farm/farm.service';
+
+// Cost to repair 10% durability
+const REPAIR_COST_PER_10PCT = 50; // 50 GOLD per 10%
 
 // ── Anti-bot constants ────────────────────────────────────────────
 const MAX_DAILY_STEALS        = 5;
@@ -60,6 +65,10 @@ export class ActionService {
     private readonly stealLogRepo: Repository<StealLog>,
     @InjectRepository(NftGuardDog)
     private readonly dogRepo: Repository<NftGuardDog>,
+    @InjectRepository(FarmBuilding)
+    private readonly buildingRepo: Repository<FarmBuilding>,
+    @InjectRepository(UserItem)
+    private readonly itemRepo: Repository<UserItem>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly config: ConfigService,
@@ -87,6 +96,11 @@ export class ActionService {
       if (!seed)  throw new NotFoundException('Seed not found');
       if (!user)  throw new NotFoundException('User not found');
       if (plot.seedId) throw new BadRequestException('Plot already has a crop planted');
+
+      // Soil fertility gate: 0% means soil is exhausted, must restore with compost
+      if ((plot.soilFertility ?? 100) <= 0) {
+        throw new BadRequestException('🌱 Soil exhausted! Buy Basic Compost from the shop to restore fertility.');
+      }
 
       const playerLevel = Math.floor(user.trustScore / 10);
       if (playerLevel < (seed.levelRequired ?? 0)) {
@@ -229,6 +243,11 @@ export class ActionService {
       const effectiveYield  = baseYield * levelMultiplier;
       const totalStolen     = Number(plot.totalStolen);
 
+      // ── Soil Fertility multiplier (#37) ──────────────────────────
+      const soilFertility    = plot.soilFertility ?? 100;
+      const soilMult         = soilFertility / 100;
+      const newSoilFertility = Math.max(0, soilFertility - 20);
+
       // Apply weather multiplier
       const weather = getTodayWeather();
       let weatherMultiplier = 1.0;
@@ -249,12 +268,14 @@ export class ActionService {
         && plot.lastWateredAt >= plot.plantedAt;
       const dryMult = wateredThisCycle ? 1.0 : 0.85;
 
-      const actualYield = Math.max(0, effectiveYield * weatherMultiplier * infestMult * dryMult - totalStolen);
+      const actualYield = Math.max(0, effectiveYield * soilMult * weatherMultiplier * infestMult * dryMult - totalStolen);
 
-      // Clear plot (including fertilized flag, infestation, and watering state)
+      // Clear plot + apply soil fertility decay
       await qr.manager.createQueryBuilder()
         .update(FarmPlot)
-        .set({ seedId: null, plantedAt: null, harvestableAt: null, totalStolen: 0, lastStolenAt: null, fertilized: false, hasBugs: false, hasWeeds: false, lastWateredAt: null })
+        .set({ seedId: null, plantedAt: null, harvestableAt: null, totalStolen: 0, lastStolenAt: null,
+               fertilized: false, hasBugs: false, hasWeeds: false, lastWateredAt: null,
+               soilFertility: newSoilFertility })
         .where('id = :id', { id: plot.id })
         .execute();
 
@@ -295,14 +316,17 @@ export class ActionService {
 
       const dryMsg = !wateredThisCycle ? ' 🏜️ −15% (dry soil)' : '';
 
+      const soilMsg = soilFertility < 100 ? ` 🌱 Soil ${soilFertility}%→${newSoilFertility}%` : '';
       return {
-        message: `Harvested ${actualYield.toFixed(2)} GOLD${weatherMsg}${infestMsg}${dryMsg}`,
+        message: `Harvested ${actualYield.toFixed(2)} GOLD${weatherMsg}${infestMsg}${dryMsg}${soilMsg}`,
         goldEarned: actualYield,
         goldLostToThieves: totalStolen,
         fertilizerUsed: plot.fertilized,
         hadBugs: plot.hasBugs,
         hadWeeds: plot.hasWeeds,
         hadDrySoil: !wateredThisCycle,
+        soilFertilityBefore: soilFertility,
+        soilFertilityAfter: newSoilFertility,
         levelUp,
         newLevel,
       };
@@ -416,7 +440,7 @@ export class ActionService {
   // ─────────────────────────────────────────────────────────────
   //  STEAL — with daily quota + 24h farm protection + trust accrual
   // ─────────────────────────────────────────────────────────────
-  async steal(thiefId: string, dto: StealDto): Promise<{ success: boolean; goldChange: number; message: string }> {
+  async steal(thiefId: string, dto: StealDto): Promise<{ success: boolean; goldChange: number; message: string; fenceBypass?: boolean; masterKeyUsed?: boolean }> {
     if (thiefId === dto.targetUserId) {
       throw new BadRequestException('You cannot steal from yourself');
     }
@@ -530,11 +554,33 @@ export class ActionService {
         throw new BadRequestException('🎉 Harvest Festival! Stealing is disabled today — come back tomorrow.');
       }
 
+      // ── Farm Maintenance: fence durability (#36) ─────────────────
+      const building = await qr.manager.findOne(FarmBuilding, {
+        where: { userId: dto.targetUserId },
+      });
+      const currentDurability = building ? building.getCurrentDurability() : 100;
+      const fenceBypass = currentDurability <= 0; // 0% fence = guard dogs ignored
+
+      // ── Master Key (#38): consume to bypass guard dogs ────────────
+      let masterKeyUsed = false;
+      if (dto.useMasterKey) {
+        const keyItem = await qr.manager.findOne(UserItem, {
+          where: { userId: thiefId, itemType: 'master_key' },
+        });
+        if (!keyItem || keyItem.quantity < 1) {
+          throw new BadRequestException('No Master Key in inventory');
+        }
+        // Consume only on successful result — deduct now, record flag
+        masterKeyUsed = true;
+        await qr.manager.decrement(UserItem, { userId: thiefId, itemType: 'master_key' }, 'quantity', 1);
+      }
+
       // Guard dog defense
       const dogs = await qr.manager.find(NftGuardDog, {
         where: { ownerId: dto.targetUserId, isActive: true },
       });
-      const totalDefensePower = dogs.reduce((sum, d) => sum + d.defensePower, 0);
+      const rawDefense      = dogs.reduce((sum, d) => sum + d.defensePower, 0);
+      const totalDefensePower = (fenceBypass || masterKeyUsed) ? 0 : rawDefense;
       const baseRate    = this.cfg<number>('game.baseStealSuccessRate');
       const weatherPenalty = weather.effect === 'steal_penalty' ? weather.value * 100 : 0;
       const successRate = Math.max(0, Math.min(baseRate, baseRate - totalDefensePower - weatherPenalty));
@@ -590,7 +636,7 @@ export class ActionService {
 
         await qr.manager.insert(StealLog, {
           thiefId, victimId: dto.targetUserId, plotId: plot.id,
-          amount: stealAmount, success: true,
+          amount: stealAmount, success: true, isAnonymous: true,
         });
 
         await qr.commitTransaction();
@@ -613,7 +659,9 @@ export class ActionService {
         return {
           success: true,
           goldChange: stealAmount,
-          message: `Stolen ${stealAmount.toFixed(2)} GOLD!`,
+          fenceBypass,
+          masterKeyUsed,
+          message: `Stolen ${stealAmount.toFixed(2)} GOLD!${fenceBypass ? ' (broken fence — no dog defense)' : ''}`,
         };
 
       } else {
@@ -961,12 +1009,13 @@ export class ActionService {
       .innerJoin('users', 'thief',  'thief.id  = sl.thief_id')
       .innerJoin('users', 'victim', 'victim.id = sl.victim_id')
       .select([
-        'sl.id         AS id',
-        'sl.thief_id   AS "thiefId"',
-        'sl.victim_id  AS "victimId"',
-        'sl.success    AS success',
+        'sl.id           AS id',
+        'sl.thief_id     AS "thiefId"',
+        'sl.victim_id    AS "victimId"',
+        'sl.success      AS success',
+        'sl.is_anonymous AS "isAnonymous"',
         'CAST(sl.amount AS FLOAT) AS amount',
-        'sl.created_at AS "createdAt"',
+        'sl.created_at   AS "createdAt"',
         'thief.username  AS "thiefUsername"',
         'victim.username AS "victimUsername"',
       ])
@@ -975,19 +1024,128 @@ export class ActionService {
       .limit(limit)
       .getRawMany<{
         id: string; thiefId: string; victimId: string;
-        success: boolean; amount: number; createdAt: Date;
+        success: boolean; isAnonymous: boolean; amount: number; createdAt: Date;
         thiefUsername: string | null; victimUsername: string | null;
       }>();
 
-    return rows.map((r) => ({
-      id: r.id,
-      role: r.thiefId === userId ? ('attacker' as const) : ('defender' as const),
-      success: r.success,
-      amount: r.amount,
-      createdAt: r.createdAt,
-      otherUsername: r.thiefId === userId
+    return rows.map((r) => {
+      const isAttacker = r.thiefId === userId;
+      // Never expose thief identity to victim if still anonymous
+      const otherUsername = isAttacker
         ? (r.victimUsername ?? 'Unknown')
-        : (r.thiefUsername ?? 'Unknown'),
-    }));
+        : (!r.isAnonymous ? (r.thiefUsername ?? 'Unknown') : '???');
+      return {
+        id: r.id,
+        role: isAttacker ? ('attacker' as const) : ('defender' as const),
+        success: r.success,
+        isAnonymous: r.isAnonymous && !isAttacker,
+        amount: r.amount,
+        createdAt: r.createdAt,
+        otherUsername,
+      };
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  REVEAL THIEF (#38) — consume 1 Magnifying Glass to unmask
+  // ─────────────────────────────────────────────────────────────
+  async revealThief(userId: string, dto: RevealThiefDto) {
+    const log = await this.stealLogRepo.findOne({
+      where: { id: dto.stealLogId, victimId: userId, isAnonymous: true, success: true },
+      relations: ['thief'],
+    });
+    if (!log) throw new NotFoundException('Steal log not found or already revealed');
+
+    // Consume 1 Magnifying Glass
+    const glass = await this.itemRepo.findOne({
+      where: { userId, itemType: 'magnifying_glass' },
+    });
+    if (!glass || glass.quantity < 1) {
+      throw new BadRequestException('🔍 No Magnifying Glass in inventory. Invite a friend to earn one!');
+    }
+
+    await Promise.all([
+      this.itemRepo.decrement({ userId, itemType: 'magnifying_glass' }, 'quantity', 1),
+      this.stealLogRepo.update(log.id, { isAnonymous: false }),
+    ]);
+
+    return {
+      thiefId: log.thiefId,
+      thiefUsername: log.thief?.username ?? 'Unknown',
+      stolenAmount: Number(log.amount),
+      stolenAt: log.createdAt,
+      glassesLeft: glass.quantity - 1,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  GET BUILDING STATUS (#36)
+  // ─────────────────────────────────────────────────────────────
+  async getBuildingStatus(userId: string) {
+    let building = await this.buildingRepo.findOne({ where: { userId } });
+    if (!building) {
+      building = this.buildingRepo.create({ userId, fenceDurability: 100, barnDurability: 100 });
+      await this.buildingRepo.save(building);
+    }
+    const currentDurability = building.getCurrentDurability();
+    return {
+      fenceDurability: currentDurability,
+      barnDurability: building.barnDurability,
+      lastRepairedAt: building.lastRepairedAt,
+      repairCostPer10Pct: REPAIR_COST_PER_10PCT,
+      alertNeeded: currentDurability < 30,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  REPAIR BUILDING (#36) — restore fence/barn durability
+  //  Cost: 50 GOLD per 10% restored
+  // ─────────────────────────────────────────────────────────────
+  async repairBuilding(userId: string, target: 'fence' | 'barn', amount: number) {
+    if (amount <= 0 || amount > 100 || amount % 10 !== 0) {
+      throw new BadRequestException('Repair amount must be a multiple of 10 between 10 and 100');
+    }
+
+    const [building, user] = await Promise.all([
+      this.buildingRepo.findOne({ where: { userId } }),
+      this.userRepo.findOne({ where: { id: userId } }),
+    ]);
+    if (!user) throw new NotFoundException('User not found');
+
+    const totalCost = (amount / 10) * REPAIR_COST_PER_10PCT;
+    if (Number(user.goldBalance) < totalCost) {
+      throw new BadRequestException(`Need ${totalCost} GOLD to repair ${amount}% durability. Have ${user.goldBalance}.`);
+    }
+
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+    try {
+      const b = building ?? this.buildingRepo.create({ userId });
+      const currentFence = b ? b.getCurrentDurability() : 100;
+      const newFence = Math.min(100, (target === 'fence' ? currentFence : b?.barnDurability ?? 100) + amount);
+
+      await qr.manager.save(FarmBuilding, {
+        ...b,
+        userId,
+        fenceDurability: target === 'fence' ? newFence : (b?.fenceDurability ?? 100),
+        barnDurability:  target === 'barn'  ? newFence : (b?.barnDurability ?? 100),
+        lastRepairedAt: new Date(),
+      });
+      await qr.manager.decrement(User, { id: userId }, 'goldBalance', totalCost);
+      await qr.commitTransaction();
+
+      return {
+        message: `🔧 Repaired ${amount}% ${target} durability for ${totalCost} GOLD`,
+        newDurability: newFence,
+        goldSpent: totalCost,
+        goldBalance: Number(user.goldBalance) - totalCost,
+      };
+    } catch (err) {
+      await qr.rollbackTransaction();
+      throw err;
+    } finally {
+      await qr.release();
+    }
   }
 }

@@ -234,6 +234,64 @@ export class Web3Service {
     };
   }
 
+  // ── Exchange Rate Engine (#18) ──────────────────────────────────
+  private cachedRate: number = 1.0;
+  private rateCachedAt: number = 0;
+  private readonly RATE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+  async getExchangeRate(): Promise<{
+    goldPerFarm: number;
+    totalGoldCirculating: number;
+    lastUpdated: string;
+    note: string;
+  }> {
+    if (Date.now() - this.rateCachedAt < this.RATE_TTL_MS) {
+      return {
+        goldPerFarm: this.cachedRate,
+        totalGoldCirculating: 0,
+        lastUpdated: new Date(this.rateCachedAt).toISOString(),
+        note: 'cached',
+      };
+    }
+    await this.syncExchangeRate();
+    return {
+      goldPerFarm: this.cachedRate,
+      totalGoldCirculating: 0,
+      lastUpdated: new Date(this.rateCachedAt).toISOString(),
+      note: this.cachedRate === 1.0 ? 'fallback 1:1 (no treasury data)' : 'computed',
+    };
+  }
+
+  @Cron('*/5 * * * *')
+  async syncExchangeRate(): Promise<void> {
+    try {
+      const [{ total }] = await this.dataSource.manager.query(
+        `SELECT COALESCE(SUM(gold_balance), 0) AS total FROM users`,
+      ) as [{ total: string }];
+
+      const goldCirc = Number(total);
+
+      let farmInTreasury = 0;
+      if (this.provider && this.adminWallet) {
+        const farmTokenAddress = this.config.get<string>('web3.farmTokenAddress') ?? '';
+        if (farmTokenAddress && farmTokenAddress.length > 10) {
+          const erc20ABI = ['function balanceOf(address) view returns (uint256)'];
+          const token = new ethers.Contract(farmTokenAddress, erc20ABI, this.provider);
+          const bal = await token.balanceOf(this.adminWallet.address) as bigint;
+          farmInTreasury = Number(ethers.formatEther(bal));
+        }
+      }
+
+      this.cachedRate = farmInTreasury > 0 && goldCirc > 0
+        ? Number((goldCirc / farmInTreasury).toFixed(4))
+        : 1.0;
+      this.rateCachedAt = Date.now();
+    } catch {
+      this.cachedRate = 1.0;
+      this.rateCachedAt = Date.now();
+    }
+  }
+
   // Background sync: every 30 minutes, re-sync the 50 most recently active wallet users
   @Cron('0 */30 * * * *')
   async scheduledNftSync(): Promise<void> {

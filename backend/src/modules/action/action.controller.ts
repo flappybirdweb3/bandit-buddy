@@ -6,7 +6,7 @@ import { ActionService } from './action.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '../user/entities/user.entity';
-import { PlantDto, HarvestDto, StealDto, PlotIdDto, ThrowAttackDto, FertilizeDto } from './dto/action.dto';
+import { PlantDto, HarvestDto, StealDto, PlotIdDto, ThrowAttackDto, FertilizeDto, RevealThiefDto, RepairDto } from './dto/action.dto';
 
 @Controller('action')
 @UseGuards(TelegramAuthGuard)
@@ -74,5 +74,20 @@ export class ActionController {
   @Get('activity')
   async getActivity(@CurrentUser() user: User) {
     return this.actionService.getActivityFeed(user.id);
+  }
+
+  @Post('reveal-thief')
+  async revealThief(@CurrentUser() user: User, @Body() dto: RevealThiefDto) {
+    return this.actionService.revealThief(user.id, dto);
+  }
+
+  @Get('buildings')
+  async getBuildingStatus(@CurrentUser() user: User) {
+    return this.actionService.getBuildingStatus(user.id);
+  }
+
+  @Post('repair')
+  async repairBuilding(@CurrentUser() user: User, @Body() dto: RepairDto) {
+    return this.actionService.repairBuilding(user.id, dto.target, dto.amount);
   }
 }

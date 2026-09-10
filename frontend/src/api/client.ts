@@ -2,7 +2,8 @@ import WebApp from '@twa-dev/sdk';
 import type {
   UserProfile, FarmData, SeedConfig, StealResult, ClaimPayload, LeaderboardData,
   FriendEntry, ReferralInfo, DailyClaimResult, DailyQuest, ShopCatalog,
-  NotificationInbox, ActivityEntry, Achievement, NftStatus,
+  NotificationInbox, ActivityEntry, Achievement, NftStatus, ExchangeRate,
+  BuildingStatus, MarketplaceListing,
 } from '@/types/game.types';
 
 const BASE_URL = '/api';
@@ -138,6 +139,35 @@ export const api = {
 
   // Weather
   getWeather: () => request<import('@/types/game.types').WeatherEvent>('/farm/weather/today'),
+
+  // Web3 — exchange rate
+  getExchangeRate: () => request<ExchangeRate>('/web3/exchange-rate'),
+
+  // Farm buildings / maintenance (#36)
+  getBuildingStatus: () => request<BuildingStatus>('/action/buildings'),
+  repairBuilding: (target: 'fence' | 'barn', amount: number) =>
+    request<{ message: string; newDurability: number; goldSpent: number }>('/action/repair', {
+      method: 'POST', body: JSON.stringify({ target, amount }),
+    }),
+
+  // Revenge mechanic (#38)
+  revealThief: (stealLogId: string) =>
+    request<{ thiefId: string; thiefUsername: string; stolenAmount: number; stolenAt: string; glassesLeft: number }>(
+      '/action/reveal-thief',
+      { method: 'POST', body: JSON.stringify({ stealLogId }) },
+    ),
+
+  // Marketplace (#19)
+  getMarketplaceListings: (limit = 50, offset = 0) =>
+    request<MarketplaceListing[]>(`/marketplace/listings?limit=${limit}&offset=${offset}`),
+  getMyMarketplaceListings: () => request<MarketplaceListing[]>('/marketplace/my-listings'),
+  createMarketplaceListing: (data: {
+    nftContract: string; tokenId: number; priceFarm: number; deadline: string; eip712Sig: string;
+  }) => request<MarketplaceListing>('/marketplace/list', { method: 'POST', body: JSON.stringify(data) }),
+  cancelMarketplaceListing: (id: string) =>
+    request<{ message: string }>(`/marketplace/cancel/${id}`, { method: 'DELETE' }),
+  buyMarketplaceListing: (id: string) =>
+    request<{ message: string; order: object; contractAddress: string }>(`/marketplace/buy/${id}`, { method: 'POST' }),
 
   // Batch actions
   harvestAll: () => request<{ harvested: number; totalGold: number; message: string; levelUp: boolean; newLevel: number }>('/action/harvest-all', { method: 'POST' }),

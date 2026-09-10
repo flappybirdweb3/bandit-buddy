@@ -210,6 +210,35 @@ export class ShopService {
         await qr.manager.update(User, { id: userId }, { advancedFertCharges: newCharges });
         resultMsg = `+${item.effectValue} Advanced Fertilizer (${newCharges}/${MAX_FERT_ADVANCED}) — −5h grow time`;
 
+      // ── Soil Restoration (#37) ────────────────────────────────────
+      } else if (item.effectType === 'soil_restore_basic' || item.effectType === 'soil_restore_premium') {
+        // Applies to ALL user's plots with low soil fertility, up to effectValue total pct
+        const plots = await qr.manager
+          .createQueryBuilder()
+          .select(['id', 'soil_fertility'])
+          .from('farm_plots', 'p')
+          .where('p.user_id = :uid', { uid: userId })
+          .andWhere('p.soil_fertility < 100')
+          .orderBy('p.soil_fertility', 'ASC')
+          .getRawMany<{ id: string; soil_fertility: number }>();
+
+        let restored = 0;
+        for (const plot of plots) {
+          const canAdd = Math.min(item.effectValue, 100 - plot.soil_fertility);
+          if (canAdd > 0) {
+            await qr.manager.createQueryBuilder()
+              .update('farm_plots')
+              .set({ soil_fertility: () => `LEAST(100, "soil_fertility" + ${canAdd})` })
+              .where('id = :id', { id: plot.id })
+              .execute();
+            restored += canAdd;
+          }
+          if (restored >= item.effectValue) break;
+        }
+        resultMsg = plots.length === 0
+          ? `${item.name} used — all plots already at 100% fertility!`
+          : `${item.name} applied — restored up to ${item.effectValue}% soil fertility across ${plots.length} plot(s)`;
+
       // ── Energy refill ──────────────────────────────────────────────
       } else if (item.effectType === 'energy') {
         const userMaxEnergy = user.maxEnergy ?? MAX_ENERGY;

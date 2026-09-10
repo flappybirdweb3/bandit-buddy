@@ -222,6 +222,7 @@ export interface ActivityEntry {
   id: string;
   role: 'attacker' | 'defender';
   success: boolean;
+  isAnonymous?: boolean;
   amount: number;
   createdAt: string;
   otherUsername: string;
@@ -271,3 +272,31 @@ export interface NftStatus {
   totalNftDefense: number;
   breedCount: number;
 }
+
+export interface ExchangeRate {
+  goldPerFarm: number;
+  totalGoldCirculating: number;
+  lastUpdated: string;
+  note: string;
+}
+
+export interface BuildingStatus {
+  fenceDurability: number;
+  barnDurability: number;
+  lastRepairedAt: string;
+  repairCostPer10Pct: number;
+  alertNeeded: boolean;
+}
+
+export interface MarketplaceListing {
+  id: string;
+  seller: string;
+  nftContract: string;
+  tokenId: number;
+  priceFarm: number;
+  deadline: string;
+  createdAt: string;
+  eip712Sig: string;
+  nonce: number;
+}
+

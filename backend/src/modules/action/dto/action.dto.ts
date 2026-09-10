@@ -1,4 +1,4 @@
-import { IsUUID, IsNotEmpty, IsIn, IsOptional } from 'class-validator';
+import { IsUUID, IsNotEmpty, IsIn, IsOptional, IsBoolean } from 'class-validator';
 
 export class PlantDto {
   @IsUUID()
@@ -24,6 +24,25 @@ export class StealDto {
   @IsUUID()
   @IsNotEmpty()
   plotId: string;
+
+  @IsOptional()
+  @IsBoolean()
+  useMasterKey?: boolean;
+}
+
+export class RevealThiefDto {
+  @IsUUID()
+  @IsNotEmpty()
+  stealLogId: string;
+}
+
+export class RepairDto {
+  @IsIn(['fence', 'barn'])
+  target: 'fence' | 'barn';
+
+  /** How much durability to restore (10-100, increments of 10) */
+  @IsNotEmpty()
+  amount: number;
 }
 
 export class PlotIdDto {

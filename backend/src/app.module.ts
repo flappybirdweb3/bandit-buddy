@@ -15,6 +15,7 @@ import { QuestModule } from './modules/quest/quest.module';
 import { ShopModule } from './modules/shop/shop.module';
 import { BotModule } from './modules/bot/bot.module';
 import { GuildModule } from './modules/guild/guild.module';
+import { MarketplaceModule } from './modules/marketplace/marketplace.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { GuildModule } from './modules/guild/guild.module';
     ShopModule,
     BotModule,
     GuildModule,
+    MarketplaceModule,
   ],
   providers: [
     {

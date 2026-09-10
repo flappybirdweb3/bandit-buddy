@@ -6,13 +6,15 @@ import { FarmPlot } from '../farm/entities/farm-plot.entity';
 import { SeedConfig } from '../farm/entities/seed-config.entity';
 import { StealLog } from '../farm/entities/steal-log.entity';
 import { NftGuardDog } from '../farm/entities/nft-guard-dog.entity';
+import { FarmBuilding } from '../farm/entities/farm-building.entity';
 import { User } from '../user/entities/user.entity';
+import { UserItem } from '../user/entities/user-item.entity';
 import { NotificationModule } from '../notification/notification.module';
 import { QuestModule } from '../quest/quest.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([FarmPlot, SeedConfig, StealLog, NftGuardDog, User]),
+    TypeOrmModule.forFeature([FarmPlot, SeedConfig, StealLog, NftGuardDog, FarmBuilding, User, UserItem]),
     NotificationModule,
     QuestModule,
   ],

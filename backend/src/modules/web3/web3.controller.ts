@@ -31,4 +31,9 @@ export class Web3Controller {
   async getNftStatus(@CurrentUser() user: User) {
     return this.web3Service.getNftStatus(user.id);
   }
+
+  @Get('exchange-rate')
+  async getExchangeRate() {
+    return this.web3Service.getExchangeRate();
+  }
 }
