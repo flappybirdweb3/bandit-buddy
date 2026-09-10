@@ -8,6 +8,7 @@ export default () => ({
     name: process.env.DB_NAME || 'barnbuddy',
     user: process.env.DB_USER || 'barnbuddy',
     password: process.env.DB_PASSWORD || 'barnbuddy_secret',
+    ssl: process.env.DB_SSL !== 'false' && process.env.NODE_ENV === 'production',
   },
 
   redis: {

@@ -2,9 +2,10 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 
 export class AddSeasonalSeeds1700000000017 implements MigrationInterface {
   async up(qr: QueryRunner): Promise<void> {
-    // Add category column to seed_configs (regular vs seasonal)
+    // Add level_required + category columns to seed_configs
     await qr.query(`
       ALTER TABLE seed_configs
+      ADD COLUMN IF NOT EXISTS level_required INTEGER NOT NULL DEFAULT 1,
       ADD COLUMN IF NOT EXISTS is_seasonal BOOLEAN NOT NULL DEFAULT false,
       ADD COLUMN IF NOT EXISTS seasonal_tag VARCHAR(30) NULL;
     `);
@@ -24,6 +25,6 @@ export class AddSeasonalSeeds1700000000017 implements MigrationInterface {
 
   async down(qr: QueryRunner): Promise<void> {
     await qr.query(`DELETE FROM seed_configs WHERE is_seasonal = true;`);
-    await qr.query(`ALTER TABLE seed_configs DROP COLUMN IF EXISTS is_seasonal, DROP COLUMN IF EXISTS seasonal_tag;`);
+    await qr.query(`ALTER TABLE seed_configs DROP COLUMN IF EXISTS is_seasonal, DROP COLUMN IF EXISTS seasonal_tag, DROP COLUMN IF EXISTS level_required;`);
   }
 }

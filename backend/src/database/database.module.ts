@@ -19,7 +19,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
         migrationsRun: true,
         synchronize: false,
         logging: config.get('nodeEnv') === 'development',
-        ssl: config.get('nodeEnv') === 'production' ? { rejectUnauthorized: false } : false,
+        ssl: config.get('database.ssl') ? { rejectUnauthorized: false } : false,
       }),
     }),
   ],

@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: barnbuddy
       POSTGRES_PASSWORD: barnbuddy_secret
     ports:
-      - '5432:5432'
+      - '5434:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +22,7 @@ services:
     image: redis:7-alpine
     container_name: barnbuddy_redis
     ports:
-      - '6379:6379'
+      - '6381:6379'
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
@@ -38,11 +38,18 @@ services:
       dockerfile: Dockerfile
     container_name: barnbuddy_backend
     ports:
-      - '3000:3000'
+      - '3003:3000'
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://barnbuddy:barnbuddy_secret@postgres:5432/barnbuddy
-      REDIS_URL: redis://redis:6379
+      PORT: '3000'
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: barnbuddy
+      DB_USER: barnbuddy
+      DB_PASSWORD: barnbuddy_secret
+      DB_SSL: 'false'
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
     env_file:
       - .env
     depends_on:
