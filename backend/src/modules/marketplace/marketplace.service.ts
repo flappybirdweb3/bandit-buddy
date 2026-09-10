@@ -1,5 +1,5 @@
 import {
-  Injectable, BadRequestException, NotFoundException, ForbiddenException,
+  Injectable, BadRequestException, NotFoundException, ForbiddenException, Logger, OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { Repository, DataSource, LessThan } from 'typeorm';
@@ -15,8 +15,17 @@ const ORDER_TYPEHASH = ethers.keccak256(ethers.toUtf8Bytes(
   'Order(address seller,address nftContract,uint256 tokenId,uint256 price,uint256 deadline,uint256 nonce)',
 ));
 
+// BanditMarket.sol ABI — only the TradeExecuted event
+const BANDIT_MARKET_ABI = [
+  'event TradeExecuted(address indexed seller, address indexed buyer, address indexed nftContract, uint256 tokenId, uint256 amount, uint256 priceFarm, uint256 fee)',
+];
+
 @Injectable()
-export class MarketplaceService {
+export class MarketplaceService implements OnModuleInit {
+  private readonly logger = new Logger(MarketplaceService.name);
+  private marketContract: ethers.Contract | null = null;
+  private provider: ethers.FallbackProvider | null = null;
+
   constructor(
     @InjectRepository(MarketplaceListing)
     private readonly listingRepo: Repository<MarketplaceListing>,
@@ -26,6 +35,79 @@ export class MarketplaceService {
     private readonly dataSource: DataSource,
     private readonly config: ConfigService,
   ) {}
+
+  /** #42: Start on-chain event listener after module init. */
+  onModuleInit() {
+    this.startMarketplaceListener().catch((e) =>
+      this.logger.warn('Marketplace listener failed to start:', e.message),
+    );
+  }
+
+  private async startMarketplaceListener(): Promise<void> {
+    const rpcUrls = [
+      this.config.get<string>('web3.bscRpcUrl') ?? 'https://bsc-dataseed1.binance.org/',
+      'https://bsc-dataseed2.binance.org/',
+      'https://bsc-dataseed3.binance.org/',
+    ];
+    const contractAddress = this.config.get<string>('web3.marketContractAddress');
+    if (!contractAddress) {
+      this.logger.warn('#42: MARKET_CONTRACT_ADDRESS not set — skipping event listener');
+      return;
+    }
+
+    this.provider = new ethers.FallbackProvider(
+      rpcUrls.map((url, i) => ({
+        provider: new ethers.JsonRpcProvider(url),
+        priority: i + 1,
+        stallTimeout: 2000,
+        weight: 1,
+      })),
+      undefined,
+      { quorum: 1 },
+    );
+
+    this.marketContract = new ethers.Contract(contractAddress, BANDIT_MARKET_ABI, this.provider);
+
+    this.marketContract.on('TradeExecuted', async (seller, buyer, nftContract, tokenId, amount, priceFarm, fee, event) => {
+      try {
+        const txHash = event.log?.transactionHash ?? '';
+        // Mark listing as filled by on-chain tx
+        await this.listingRepo.update(
+          { nftContract, tokenId: Number(tokenId), status: 'active' },
+          { status: 'filled', filledAt: new Date(), txHash },
+        );
+        this.logger.log(`TradeExecuted: tokenId=${tokenId} seller=${seller} buyer=${buyer} tx=${txHash}`);
+      } catch (err: any) {
+        this.logger.error('Error handling TradeExecuted:', err.message);
+      }
+    });
+
+    this.logger.log(`#42: Marketplace event listener started on ${contractAddress}`);
+  }
+
+  /** Fallback cron: re-sync any on-chain trades the listener missed. */
+  @Cron('*/5 * * * *')
+  async syncMissedTrades(): Promise<void> {
+    if (!this.marketContract || !this.provider) return;
+    try {
+      const currentBlock = await this.provider.getBlockNumber();
+      const fromBlock    = currentBlock - 150; // ~5 min of BSC blocks
+      const filter = this.marketContract.filters.TradeExecuted();
+      const events = await this.marketContract.queryFilter(filter, fromBlock, currentBlock);
+
+      for (const ev of events) {
+        if (!('args' in ev)) continue;
+        const { nftContract, tokenId, fee: _fee } = (ev as ethers.EventLog).args;
+        const txHash = ev.transactionHash;
+        await this.listingRepo.update(
+          { nftContract, tokenId: Number(tokenId), status: 'active' },
+          { status: 'filled', filledAt: new Date(), txHash },
+        );
+      }
+    } catch {
+      // RPC errors are transient — silently skip
+    }
+  }
 
   async createListing(userId: string, dto: CreateListingDto): Promise<MarketplaceListing> {
     const user = await this.userRepo.findOne({ where: { id: userId } });

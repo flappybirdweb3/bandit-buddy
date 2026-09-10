@@ -188,6 +188,25 @@ contract GuardDogNFT is ERC1155, ERC1155Supply, Ownable, Pausable, ReentrancyGua
     function pause() external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
 
+    // ── Fusion contract ───────────────────────────────────────────────────────
+    address public fusionContract;
+
+    event FusionContractUpdated(address indexed newContract);
+
+    function setFusionContract(address _fusion) external onlyOwner {
+        fusionContract = _fusion;
+        emit FusionContractUpdated(_fusion);
+    }
+
+    /** Called by BanditDogFusion after commit-reveal resolves. */
+    function mint(address to, uint256 tokenId, uint256 amount, bytes calldata) external {
+        require(msg.sender == fusionContract, "Not fusion contract");
+        if (tokenId < 1 || tokenId > NUM_BREEDS) revert InvalidTokenId(tokenId);
+        if (totalSupply(tokenId) + amount > breeds[tokenId].maxSupply)
+            revert MaxSupplyReached(tokenId, breeds[tokenId].maxSupply);
+        _mint(to, tokenId, amount, "");
+    }
+
     // Owner-mint for giveaways / airdrops
     function mintTo(address to, uint256 tokenId, uint256 amount) external onlyOwner {
         if (tokenId < 1 || tokenId > NUM_BREEDS) revert InvalidTokenId(tokenId);

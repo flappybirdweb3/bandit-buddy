@@ -34,6 +34,9 @@ export default () => ({
     farmTokenAddress: process.env.FARM_TOKEN_ADDRESS || '',
     claimContractAddress: process.env.CLAIM_CONTRACT_ADDRESS || '',
     nftContractAddress: process.env.NFT_CONTRACT_ADDRESS || '',
+    marketContractAddress: process.env.MARKET_CONTRACT_ADDRESS || '',
+    gachaContractAddress: process.env.GACHA_CONTRACT_ADDRESS || '',
+    guildStakingAddress: process.env.GUILD_STAKING_ADDRESS || '',
   },
 
   admin: {

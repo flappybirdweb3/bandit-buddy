@@ -36,7 +36,7 @@ export type NftSyncResult = {
 export class Web3Service {
   private readonly logger = new Logger(Web3Service.name);
   private adminWallet: ethers.Wallet | null = null;
-  private provider: ethers.JsonRpcProvider | null = null;
+  private provider: ethers.FallbackProvider | null = null;
 
   constructor(
     private readonly config: ConfigService,
@@ -44,17 +44,30 @@ export class Web3Service {
     private readonly dataSource: DataSource,
   ) {
     const privateKey = this.config.get<string>('web3.signerPrivateKey');
-    const rpcUrl = this.config.get<string>('web3.bscRpcUrl') ?? 'https://bsc-dataseed.binance.org/';
-
     if (privateKey && privateKey.length > 0 && privateKey !== '') {
       try {
-        this.provider = new ethers.JsonRpcProvider(rpcUrl);
-        this.adminWallet = new ethers.Wallet(privateKey, this.provider);
+        this.provider = this._buildFallbackProvider();
+        this.adminWallet = new ethers.Wallet(privateKey).connect(this.provider);
         this.logger.log(`Signer wallet: ${this.adminWallet.address}`);
       } catch {
         this.logger.warn('Failed to initialize admin wallet - Web3 features disabled');
       }
     }
+  }
+
+  /** #44: Ethers.js v6 FallbackProvider with ordered RPC endpoints. */
+  private _buildFallbackProvider(): ethers.FallbackProvider {
+    const primary   = this.config.get<string>('web3.bscRpcUrl') ?? 'https://bsc-dataseed1.binance.org/';
+    const secondary = 'https://bsc-dataseed2.binance.org/';
+    const tertiary  = 'https://bsc-dataseed3.binance.org/';
+
+    const networks = [primary, secondary, tertiary].map((url, i) => ({
+      provider: new ethers.JsonRpcProvider(url),
+      priority: i + 1,
+      stallTimeout: 2000,
+      weight: 1,
+    }));
+    return new ethers.FallbackProvider(networks, undefined, { quorum: 1 });
   }
 
   async generateClaimSignature(user: User, amountToClaim: number) {

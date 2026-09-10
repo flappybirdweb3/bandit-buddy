@@ -41,6 +41,9 @@ export class MarketplaceListing {
   @Column({ type: 'timestamp', nullable: true, name: 'filled_at' })
   filledAt: Date | null;
 
+  @Column({ type: 'varchar', length: 66, nullable: true, name: 'tx_hash' })
+  txHash: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

@@ -169,6 +169,23 @@ export const api = {
   buyMarketplaceListing: (id: string) =>
     request<{ message: string; order: object; contractAddress: string }>(`/marketplace/buy/${id}`, { method: 'POST' }),
 
+  // Guild
+  listGuilds: (limit = 20, offset = 0) =>
+    request<{ id: string; name: string; tier: string; stakedFarm: number; memberCount: number; ownerUsername: string }[]>(`/guild/list?limit=${limit}&offset=${offset}`),
+  getMyGuild: () =>
+    request<{ id: string; name: string; tier: string; stakedFarm: number; taxRate: number; worldTreeHp: number; myRole: string; memberCount: number; members: { userId: string; username: string; role: string; joinedAt: string }[] } | null>('/guild/my'),
+  createGuild: (name: string) =>
+    request<{ id: string; name: string; tier: string; message: string }>('/guild/create', { method: 'POST', body: JSON.stringify({ name }) }),
+  joinGuild: (guildId: string) =>
+    request<{ message: string }>('/guild/join', { method: 'POST', body: JSON.stringify({ guildId }) }),
+  leaveGuild: () => request<{ message: string }>('/guild/leave', { method: 'DELETE' }),
+  disbandGuild: () => request<{ message: string }>('/guild/disband', { method: 'DELETE' }),
+  upgradeToElite: () => request<{ message: string }>('/guild/upgrade-elite', { method: 'POST' }),
+
+  // Subscriptions
+  getSubscriptionStatus: () =>
+    request<{ hasButler: boolean; hasCropInsurance: boolean; subscriptions: { type: string; expiresAt: string }[] }>('/subscription/status'),
+
   // Batch actions
   harvestAll: () => request<{ harvested: number; totalGold: number; message: string; levelUp: boolean; newLevel: number }>('/action/harvest-all', { method: 'POST' }),
   plantAll: (seedId: string) => request<{ planted: number; skipped: number; totalCost: number; message: string }>('/action/plant-all', { method: 'POST', body: JSON.stringify({ seedId }) }),

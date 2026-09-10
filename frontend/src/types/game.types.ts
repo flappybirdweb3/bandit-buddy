@@ -289,6 +289,33 @@ export interface BuildingStatus {
   alertNeeded: boolean;
 }
 
+export interface GuildInfo {
+  id: string;
+  name: string;
+  tier: string;
+  stakedFarm: number;
+  taxRate: number;
+  worldTreeHp: number;
+  myRole: string;
+  memberCount: number;
+  members: { userId: string; username: string; role: string; joinedAt: string }[];
+}
+
+export interface GuildListEntry {
+  id: string;
+  name: string;
+  tier: string;
+  stakedFarm: number;
+  memberCount: number;
+  ownerUsername: string;
+}
+
+export interface SubscriptionStatus {
+  hasButler: boolean;
+  hasCropInsurance: boolean;
+  subscriptions: { type: string; expiresAt: string }[];
+}
+
 export interface MarketplaceListing {
   id: string;
   seller: string;

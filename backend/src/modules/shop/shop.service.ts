@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { ShopItem } from './entities/shop-item.entity';
 import { User } from '../user/entities/user.entity';
 import { NftGuardDog } from '../farm/entities/nft-guard-dog.entity';
+import { GuildService } from '../guild/guild.service';
 
 const MAX_FERT_NORMAL   = 10;
 const MAX_FERT_SUPER    = 5;
@@ -41,6 +42,8 @@ export class ShopService {
     private readonly dogRepo: Repository<NftGuardDog>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
+    @Inject(forwardRef(() => GuildService))
+    private readonly guildService: GuildService,
   ) {}
 
   // ── Catalog + user ownership info ────────────────────────────────
@@ -138,6 +141,7 @@ export class ShopService {
       }
 
       // ── Guard pet logic ───────────────────────────────────────────
+      const eff = item.effectType as string;
       let resultMsg = '';
 
       if (isGuardPet(item.effectType)) {
@@ -189,21 +193,21 @@ export class ShopService {
           : `${item.name} deployed! Thieves now have ${Math.max(0, 80 - item.effectValue)}% steal chance`;
 
       // ── Fertilizers ───────────────────────────────────────────────
-      } else if (item.effectType === 'fertilizer_normal') {
+      } else if (eff === 'fertilizer_normal') {
         if ((user.normalFertCharges ?? 0) >= MAX_FERT_NORMAL)
           throw new BadRequestException(`Normal Fertilizer already at max (${MAX_FERT_NORMAL} charges).`);
         const newCharges = Math.min(MAX_FERT_NORMAL, (user.normalFertCharges ?? 0) + item.effectValue);
         await qr.manager.update(User, { id: userId }, { normalFertCharges: newCharges });
         resultMsg = `+${item.effectValue} Normal Fertilizer (${newCharges}/${MAX_FERT_NORMAL}) — −1h grow time`;
 
-      } else if (item.effectType === 'fertilizer_super') {
+      } else if (eff === 'fertilizer_super') {
         if ((user.superFertCharges ?? 0) >= MAX_FERT_SUPER)
           throw new BadRequestException(`Super Fertilizer already at max (${MAX_FERT_SUPER} charges).`);
         const newCharges = Math.min(MAX_FERT_SUPER, (user.superFertCharges ?? 0) + item.effectValue);
         await qr.manager.update(User, { id: userId }, { superFertCharges: newCharges });
         resultMsg = `+${item.effectValue} Super Fertilizer (${newCharges}/${MAX_FERT_SUPER}) — −2.5h grow time`;
 
-      } else if (item.effectType === 'fertilizer_advanced') {
+      } else if (eff === 'fertilizer_advanced') {
         if ((user.advancedFertCharges ?? 0) >= MAX_FERT_ADVANCED)
           throw new BadRequestException(`Advanced Fertilizer already at max (${MAX_FERT_ADVANCED} charges).`);
         const newCharges = Math.min(MAX_FERT_ADVANCED, (user.advancedFertCharges ?? 0) + item.effectValue);
@@ -211,7 +215,7 @@ export class ShopService {
         resultMsg = `+${item.effectValue} Advanced Fertilizer (${newCharges}/${MAX_FERT_ADVANCED}) — −5h grow time`;
 
       // ── Soil Restoration (#37) ────────────────────────────────────
-      } else if (item.effectType === 'soil_restore_basic' || item.effectType === 'soil_restore_premium') {
+      } else if (eff === 'soil_restore_basic' || eff === 'soil_restore_premium') {
         // Applies to ALL user's plots with low soil fertility, up to effectValue total pct
         const plots = await qr.manager
           .createQueryBuilder()
@@ -240,7 +244,7 @@ export class ShopService {
           : `${item.name} applied — restored up to ${item.effectValue}% soil fertility across ${plots.length} plot(s)`;
 
       // ── Energy refill ──────────────────────────────────────────────
-      } else if (item.effectType === 'energy') {
+      } else if (eff === 'energy') {
         const userMaxEnergy = user.maxEnergy ?? MAX_ENERGY;
         const gained = Math.min(item.effectValue, userMaxEnergy - user.energy);
         await qr.manager.createQueryBuilder()
@@ -250,8 +254,16 @@ export class ShopService {
           .execute();
         resultMsg = `+${gained} energy restored`;
 
+      // ── Subscriptions (Butler / Crop Insurance) ────────────────────
+      } else if (['butler_7d', 'butler_30d', 'crop_insurance_7d'].includes(eff)) {
+        // Deduct gold before calling guild service
+        await qr.manager.decrement(User, { id: userId }, 'goldBalance', cost);
+        await qr.commitTransaction();
+        const subResult = await this.guildService.purchaseSubscription(userId, eff);
+        return { message: subResult.message, itemName: item.name, costGold: cost };
+
       // ── Max energy upgrade (permanent) ─────────────────────────────
-      } else if (item.effectType === 'max_energy') {
+      } else if (eff === 'max_energy') {
         const HARD_CAP = 250;
         const currentMax = user.maxEnergy ?? MAX_ENERGY;
         if (currentMax >= HARD_CAP)

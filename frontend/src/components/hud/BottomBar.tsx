@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { SEED_EMOJI } from "@/constants/seeds";
-import { MousePointer2, Shovel, Sprout, Droplets, Bug, Hand, Trophy, Gem, Flame, ShoppingBag, ClipboardList, Globe, Flower2 } from 'lucide-react';
+import { MousePointer2, Shovel, Sprout, Droplets, Bug, Hand, Trophy, Gem, Flame, ShoppingBag, ClipboardList, Globe, Flower2, Shield, Gift } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useGame } from '@/providers/GameProvider';
@@ -9,12 +9,15 @@ import { api } from '@/api/client';
 import { HarvestAllButton } from '@/components/hud/HarvestAllButton';
 import { PlantAllButton } from '@/components/hud/PlantAllButton';
 
-const ClaimModal      = lazy(() => import('@/components/modals/ClaimModal').then(m => ({ default: m.ClaimModal })));
+const ClaimModal       = lazy(() => import('@/components/modals/ClaimModal').then(m => ({ default: m.ClaimModal })));
 const LeaderboardModal = lazy(() => import('@/components/modals/LeaderboardModal').then(m => ({ default: m.LeaderboardModal })));
 const DailyRewardModal = lazy(() => import('@/components/modals/DailyRewardModal').then(m => ({ default: m.DailyRewardModal })));
 const ShopModal        = lazy(() => import('@/components/modals/ShopModal').then(m => ({ default: m.ShopModal })));
 const QuestModal       = lazy(() => import('@/components/modals/QuestModal').then(m => ({ default: m.QuestModal })));
 const ExploreModal     = lazy(() => import('@/components/modals/ExploreModal').then(m => ({ default: m.ExploreModal })));
+const MarketplaceModal = lazy(() => import('@/components/modals/MarketplaceModal').then(m => ({ default: m.MarketplaceModal })));
+const GuildModal       = lazy(() => import('@/components/modals/GuildModal').then(m => ({ default: m.GuildModal })));
+const GachaModal       = lazy(() => import('@/components/modals/GachaModal').then(m => ({ default: m.GachaModal })));
 
 export type ToolId = 'cursor' | 'dig' | 'seed' | 'water' | 'spray' | 'weed-kill' | 'steal';
 
@@ -37,18 +40,21 @@ export function BottomBar() {
   const [showShop, setShowShop] = useState(false);
   const [showQuests, setShowQuests] = useState(false);
   const [showExplore, setShowExplore] = useState(false);
+  const [showMarketplace, setShowMarketplace] = useState(false);
+  const [showGuild, setShowGuild] = useState(false);
+  const [showGacha, setShowGacha] = useState(false);
   const { profile, myFarm } = useGame();
 
   // Block Phaser input whenever any BottomBar modal is open
   useEffect(() => {
-    const open = showClaim || showLeaderboard || showDaily || showShop || showQuests || showExplore;
+    const open = showClaim || showLeaderboard || showDaily || showShop || showQuests || showExplore || showMarketplace || showGuild || showGacha;
     if (open) {
       eventBus.emit('ui-overlay', true);
       return;
     }
     const t = setTimeout(() => eventBus.emit('ui-overlay', false), 200);
     return () => clearTimeout(t);
-  }, [showClaim, showLeaderboard, showDaily, showShop, showQuests, showExplore]);
+  }, [showClaim, showLeaderboard, showDaily, showShop, showQuests, showExplore, showMarketplace, showGuild, showGacha]);
 
   const { data: quests = [] } = useQuery({
     queryKey: ['dailyQuests'],
@@ -307,6 +313,24 @@ export function BottomBar() {
             label="Explore"
             onClick={() => setShowExplore(true)}
           />
+
+          <NavBtn
+            icon={<ShoppingBag size={18} />}
+            label="Market"
+            onClick={() => setShowMarketplace(true)}
+          />
+
+          <NavBtn
+            icon={<Shield size={18} />}
+            label="Guild"
+            onClick={() => setShowGuild(true)}
+          />
+
+          <NavBtn
+            icon={<Gift size={18} />}
+            label="Gacha"
+            onClick={() => setShowGacha(true)}
+          />
         </div>
       </div>
 
@@ -333,6 +357,9 @@ export function BottomBar() {
         {showShop && <ShopModal onClose={() => setShowShop(false)} />}
         {showQuests && <QuestModal onClose={() => setShowQuests(false)} />}
         {showExplore && <ExploreModal onClose={() => setShowExplore(false)} />}
+        {showMarketplace && <MarketplaceModal onClose={() => setShowMarketplace(false)} />}
+        {showGuild && <GuildModal onClose={() => setShowGuild(false)} />}
+        {showGacha && <GachaModal onClose={() => setShowGacha(false)} />}
       </Suspense>
     </>
   );
