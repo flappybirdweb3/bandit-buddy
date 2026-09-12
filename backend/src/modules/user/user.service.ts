@@ -123,8 +123,21 @@ export class UserService {
     };
   }
 
+  /**
+   * Link (or re-link) a BSC wallet.
+   *
+   * Canonicalised to lowercase, and this is load-bearing — not cosmetic. Wallets arrive
+   * EIP-55 checksummed (viem's privateKeyToAccount().address), and Postgres compares
+   * varchar case-sensitively. Every lookup in the codebase — notably
+   * MarketplaceService.handleOffchainItemSold() — queries `wallet_address = lower(...)`,
+   * so a checksummed row could never be found: seller/buyer lookups returned null, item
+   * delivery never happened, and (since that handler throws rather than returns) the sweep
+   * retried the same event forever. Storing lowercase makes writer and readers agree.
+   *
+   * Checksum casing remains a display concern; the chain treats both forms identically.
+   */
   async updateWalletAddress(userId: string, walletAddress: string): Promise<void> {
-    await this.userRepo.update(userId, { walletAddress });
+    await this.userRepo.update(userId, { walletAddress: walletAddress.toLowerCase() });
   }
 
   async findById(id: string): Promise<User> {
