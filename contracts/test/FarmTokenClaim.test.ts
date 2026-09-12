@@ -5,6 +5,21 @@ import type { SignerWithAddress } from '@nomicfoundation/hardhat-ethers/signers'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+// Populated in beforeEach() from the freshly deployed contract. The digest is
+// domain-bound to (block.chainid, address(this)), so the helper needs both values to
+// mirror FarmTokenClaim.hashMessage() exactly. Signing the old 3-argument pre-image made
+// every claim revert with InvalidSignature().
+let claimAddress: string;
+let activeChainId: bigint;
+
+/**
+ * Mirrors FarmTokenClaim.hashMessage():
+ *   keccak256(abi.encodePacked(block.chainid, address(this), user, amount, nonce))
+ * then applies the ERC-191 ("\x19Ethereum Signed Message:\n32") prefix via signMessage.
+ *
+ * Argument order matches CLAIM_DIGEST_TYPES in backend/src/modules/web3/claim-digest.ts —
+ * if this drifts, claims revert rather than silently paying out.
+ */
 async function buildSignature(
   signer: SignerWithAddress,
   user: string,
@@ -12,8 +27,8 @@ async function buildSignature(
   nonce: number,
 ): Promise<string> {
   const messageHash = ethers.solidityPackedKeccak256(
-    ['address', 'uint256', 'uint256'],
-    [user, amount, nonce],
+    ['uint256', 'address', 'address', 'uint256', 'uint256'],
+    [activeChainId, claimAddress, user, amount, nonce],
   );
   // signMessage adds "\x19Ethereum Signed Message:\n32" prefix
   return signer.signMessage(ethers.getBytes(messageHash));
@@ -51,6 +66,9 @@ describe('FarmTokenClaim', () => {
       owner.address,
     )) as unknown as FarmTokenClaim;
     await claim.waitForDeployment();
+
+    claimAddress = await claim.getAddress();
+    activeChainId = (await ethers.provider.getNetwork()).chainId;
 
     // Fund the claim pool
     await token.approve(await claim.getAddress(), POOL_FUND);
@@ -182,8 +200,8 @@ describe('FarmTokenClaim', () => {
     it('hashMessage view matches backend computation', async () => {
       const { messageHash, ethSignedHash } = await claim.hashMessage(alice.address, CLAIM_100, 0);
       const expectedHash = ethers.solidityPackedKeccak256(
-        ['address', 'uint256', 'uint256'],
-        [alice.address, CLAIM_100, 0],
+        ['uint256', 'address', 'address', 'uint256', 'uint256'],
+        [activeChainId, claimAddress, alice.address, CLAIM_100, 0],
       );
       expect(messageHash).to.equal(expectedHash);
       expect(ethSignedHash).to.equal(
