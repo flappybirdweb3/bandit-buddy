@@ -390,6 +390,52 @@ describe('BanditBuddy E2E', () => {
       });
     });
 
+    it('should accept every documented sortBy/order combination without 500 [regression]', async () => {
+      // Regression guard for the "Cannot read properties of undefined (reading
+      // 'databaseName')" crash at SelectQueryBuilder.createOrderByCombinedWithSelectExpression.
+      //
+      // Two things had to be true at once for that 500 to happen:
+      //   1. orderBy() received a DB COLUMN name (`l.price_farm`) instead of an entity
+      //      property (`l.priceFarm`) — `where()` emits raw SQL so a column name works
+      //      there, but orderBy() resolves back against entity metadata.
+      //   2. take()/skip() was in use, which makes TypeORM run a two-phase query
+      //      (SELECT DISTINCT id ... WHERE id IN (...)) whose ORDER BY keys are
+      //      re-resolved against the selected aliases — the exact method in the trace.
+      //
+      // `createdAt` and `deadline` were benign only by coincidence on point 1 (property
+      // and column share a name); `price` was the one that always failed. The suite never
+      // exercised them, so 100% of the crashing combinations were untested. Each pair is
+      // asserted here so the sort path cannot silently regress again.
+      const cases: Array<['price' | 'createdAt' | 'deadline', 'ASC' | 'DESC']> = [
+        ['price', 'ASC'], ['price', 'DESC'],
+        ['createdAt', 'ASC'], ['createdAt', 'DESC'],
+        ['deadline', 'ASC'], ['deadline', 'DESC'],
+      ];
+
+      for (const [sortBy, order] of cases) {
+        const res = await request(app.getHttpServer())
+          .get(`/api/marketplace/listings?sortBy=${sortBy}&order=${order}&limit=5`)
+          .set(DEV_HEADERS)
+          .expect(200);
+
+        expect(Array.isArray(res.body.items)).toBe(true);
+        expect(res.body.limit).toBe(5);
+      }
+    });
+
+    it('should sort with a join + filter applied (price + assetType together)', async () => {
+      // The crash needed the leftJoinAndSelect('l.seller') present: it is the join that
+      // makes TypeORM build the combined-select expression whose ORDER BY keys get
+      // re-resolved. A sort test WITHOUT a joined+filtered query would pass even with
+      // the old bug intact, so this case exercises them together.
+      const res = await request(app.getHttpServer())
+        .get('/api/marketplace/listings?assetType=user_items&sortBy=price&order=ASC&limit=5')
+        .set(DEV_HEADERS)
+        .expect(200);
+
+      expect(Array.isArray(res.body.items)).toBe(true);
+    });
+
     it('should return my listings', async () => {
       const res = await request(app.getHttpServer())
         .get('/api/marketplace/my-listings')
