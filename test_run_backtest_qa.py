@@ -106,7 +106,8 @@ def test_success_writes_report_to_game_qa_md(run_script, tmp_path, capsys):
 
     report = tmp_path / REPORT_FILE
     assert report.read_text(encoding="utf-8") == "# QA REPORT"
-    assert not (tmp_path / "game_report.md").exists()
+    # Báo cáo phải nằm đúng game_qa.md trong CWD, không phải tên cũ nào khác
+    assert [p.name for p in tmp_path.glob("*.md")] == [REPORT_FILE]
 
     assert captured["url"] == "https://api.deepseek.com/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
@@ -179,3 +180,32 @@ def test_network_exception_is_caught(run_script, tmp_path, capsys):
 
     assert "Lỗi xử lý dữ liệu" in capsys.readouterr().out
     assert not (tmp_path / REPORT_FILE).exists()
+
+
+def test_existing_report_is_overwritten(run_script, tmp_path):
+    project = make_project(tmp_path)
+    (tmp_path / REPORT_FILE).write_text("BÁO CÁO CŨ", encoding="utf-8")
+
+    run_script(
+        env={"DEEPSEEK_API_KEY": "k", "TARGET_DIR": str(project)},
+        post_impl=lambda *a, **kw: FakeResponse(
+            200, {"choices": [{"message": {"content": "BÁO CÁO MỚI"}}]}
+        ),
+    )
+
+    assert (tmp_path / REPORT_FILE).read_text(encoding="utf-8") == "BÁO CÁO MỚI"
+
+
+def test_report_is_written_to_cwd_not_target_dir(run_script, tmp_path):
+    project = make_project(tmp_path)
+
+    run_script(
+        env={"DEEPSEEK_API_KEY": "k", "TARGET_DIR": str(project)},
+        post_impl=lambda *a, **kw: FakeResponse(
+            200, {"choices": [{"message": {"content": "# QA"}}]}
+        ),
+    )
+
+    # Script luôn ghi vào game_qa.md của CWD, không rơi vào TARGET_DIR
+    assert (tmp_path / REPORT_FILE).is_file()
+    assert not (project / REPORT_FILE).exists()
