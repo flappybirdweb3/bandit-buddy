@@ -22,7 +22,7 @@ export class TelegramAuthGuard implements CanActivate {
     private readonly notificationService: NotificationService,
     private readonly authService: AuthService,
     @InjectDataSource()
-    dataSource: DataSource,
+    private readonly dataSource: DataSource,
   ) {
     this.userRepo = dataSource.getRepository(User);
     this.plotRepo = dataSource.getRepository(FarmPlot);
@@ -35,12 +35,27 @@ export class TelegramAuthGuard implements CanActivate {
     // Cookie is sent automatically by the browser for same-origin requests,
     // requires NO custom headers, and passes through any proxy transparently.
     const rawCookie: string = request.headers['cookie'] ?? '';
-    const cookieToken = rawCookie.split('; ')
-      .find((c: string) => c.startsWith('bb_sess='))
-      ?.slice('bb_sess='.length);
+    // Split on ';' and trim, rather than on '; '. RFC 6265 permits `a=b;c=d` with no
+    // space, and some Telegram WebViews / proxy layers emit exactly that — splitting on
+    // '; ' silently failed to find bb_sess for those clients, so EVERY request fell
+    // through to initData validation and 401'd when that header was absent too.
+    const cookieToken = rawCookie
+      .split(';')
+      .map((c) => c.trim())
+      .find((c) => c.startsWith('bb_sess='))
+      ?.slice('bb_sess='.length) || undefined;
     if (cookieToken) {
-      const user = await this.authService.resolveBearer(cookieToken);
-      if (user) { request.user = user; return true; }
+      // A session store that is briefly unavailable (DB/Redis blip) must not become a
+      // 500 on every game request. Fall through to initData validation instead, which
+      // re-establishes the session. Only a definitively valid cookie short-circuits.
+      try {
+        const user = await this.authService.resolveBearer(cookieToken);
+        if (user) { request.user = user; return true; }
+      } catch (err) {
+        this.logger.warn(
+          `Session cookie lookup failed, falling back to initData: ${(err as Error).message}`,
+        );
+      }
       // Cookie is stale — fall through to initData validation
     }
 
@@ -48,10 +63,16 @@ export class TelegramAuthGuard implements CanActivate {
     const authHeader: string = request.headers['authorization'] ?? '';
     if (authHeader.startsWith('Bearer ')) {
       const token = authHeader.slice(7);
-      const user = await this.authService.resolveBearer(token);
-      if (!user) throw new UnauthorizedException('Session expired — please reload');
-      request.user = user;
-      return true;
+      try {
+        const user = await this.authService.resolveBearer(token);
+        if (!user) throw new UnauthorizedException('Session expired — please reload');
+        request.user = user;
+        return true;
+      } catch (err) {
+        // An auth verdict keeps its 401; a store outage is not an auth verdict.
+        if (err instanceof UnauthorizedException) throw err;
+        this.logger.warn(`Bearer session lookup failed, falling back: ${(err as Error).message}`);
+      }
     }
 
     // Legacy fallbacks for clients that still send initData directly in headers
@@ -92,11 +113,29 @@ export class TelegramAuthGuard implements CanActivate {
       }
     }
 
-    // Apply referral bonus on first login if came via invite link
+    // Apply referral bonus on first login if came via invite link.
+    //
+    // Deliberately NON-FATAL. This ran with a bare `await`, so ANY failure inside the
+    // bonus path (missing referrer reference, FK race on referred_by, notification
+    // error) propagated out of canActivate and 500'd the request — but only where
+    // `isNew` was true. Existing accounts skipped the block entirely and logged in
+    // normally, which is exactly the "only brand-new accounts cannot enter" signature.
+    // The account already exists and is valid at this point; a reward-side failure must
+    // never invalidate it.
     if (isNew && startParam?.startsWith('ref_')) {
       const refTelegramId = parseInt(startParam.slice(4), 10);
       if (!isNaN(refTelegramId)) {
-        await this.applyReferral(user.id, refTelegramId, telegramUser.username ?? telegramUser.first_name ?? 'Someone');
+        try {
+          await this.applyReferral(
+            user.id,
+            refTelegramId,
+            telegramUser.username ?? telegramUser.first_name ?? 'Someone',
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Referral bonus failed for user ${user.id} (login continues): ${(err as Error).message}`,
+          );
+        }
       }
     }
 
@@ -143,9 +182,18 @@ export class TelegramAuthGuard implements CanActivate {
       const computedHash = crypto
         .createHmac('sha256', secretKey)
         .update(dataCheckString)
-        .digest('hex');
+        .digest();
 
-      if (computedHash !== hash) return empty;
+      // Constant-time compare: `!==` on hex strings leaks how many leading characters
+      // matched. The length guard is required because timingSafeEqual THROWS on
+      // mismatched buffer lengths — a malformed `hash=` would otherwise be a 500.
+      const providedHash = Buffer.from(hash, 'hex');
+      if (
+        providedHash.length !== computedHash.length ||
+        !crypto.timingSafeEqual(providedHash, computedHash)
+      ) {
+        return empty;
+      }
 
       const userParam = params.get('user');
       return {
@@ -173,24 +221,35 @@ export class TelegramAuthGuard implements CanActivate {
     }
   }
 
+  /**
+   * Create the user row AND its starter plots in ONE transaction.
+   *
+   * These two inserts used to run sequentially with no transaction. If the plot insert
+   * failed, the user row was already committed while the caller saw a 500 — and because
+   * the row now existed, every subsequent login took the "existing user" path with ZERO
+   * plots. A new account could therefore be left permanently half-initialised, which the
+   * user experiences as an empty farm, not as a login failure.
+   */
   private async registerNewUser(telegramUser: any): Promise<User> {
-    const user = this.userRepo.create({
-      telegramId: telegramUser.id,
-      username: telegramUser.username || telegramUser.first_name,
-      goldBalance: 250, // Starter gold — enough for 2 Turnips (120G each)
-      energy: 100,
-      trustScore: 50,
-      nonce: 0,
+    return this.dataSource.transaction(async (manager) => {
+      const user = manager.create(User, {
+        telegramId: telegramUser.id,
+        username: telegramUser.username || telegramUser.first_name,
+        goldBalance: 250, // Starter gold — enough for 2 Turnips (120G each)
+        energy: 100,
+        trustScore: 50,
+        nonce: 0,
+      });
+
+      const savedUser = await manager.save(user);
+
+      // Provision 6 initial farm plots
+      const initialPlots = Array.from({ length: 6 }, (_, i) =>
+        manager.create(FarmPlot, { userId: savedUser.id, plotIndex: i }),
+      );
+      await manager.save(initialPlots);
+
+      return savedUser;
     });
-
-    const savedUser = await this.userRepo.save(user);
-
-    // Provision 6 initial farm plots
-    const initialPlots = Array.from({ length: 6 }, (_, i) =>
-      this.plotRepo.create({ userId: savedUser.id, plotIndex: i }),
-    );
-    await this.plotRepo.save(initialPlots);
-
-    return savedUser;
   }
 }

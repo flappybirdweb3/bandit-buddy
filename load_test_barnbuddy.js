@@ -324,13 +324,15 @@ function marketplaceFlow() {
     );
     check(mine, { 'my-listings 200': (r) => r.status === 200 });
 
-    // sync-nft trả 200 kể cả khi chưa link ví (message: "No wallet linked")
+    // sync-nft trả 201 (NestJS mặc định cho POST) kể cả khi chưa link ví
+    // (message: "No wallet linked"). Check cũ chỉ nhận 200/400 nên LUÔN fail
+    // với 201 — đó là false negative của kịch bản, không phải lỗi endpoint.
     const sync = http.post(
       `${BASE_URL}/api/web3/sync-nft`,
       null,
       { headers: h, tags: { name: 'web3_sync' } },
     );
-    check(sync, { 'sync-nft 200/400': (r) => r.status === 200 || r.status === 400 });
+    check(sync, { 'sync-nft 200/201/400': (r) => r.status === 200 || r.status === 201 || r.status === 400 });
 
     const rate = http.get(
       `${BASE_URL}/api/web3/exchange-rate`,

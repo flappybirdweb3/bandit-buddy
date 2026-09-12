@@ -105,11 +105,27 @@ export class FarmService {
     if (existingCount > 0) return;
 
     const initialPlots = (this.config.get<number>('game.initialPlots')) ?? 6;
-    const plots: Partial<FarmPlot>[] = Array.from({ length: initialPlots }, (_, i) => ({
-      userId,
-      plotIndex: i,
-    }));
-    await this.plotRepo.save(plots as FarmPlot[]);
+
+    // INSERT ... ON CONFLICT DO NOTHING on the (user_id, plot_index) unique index.
+    //
+    // The count-then-save above is a check-then-act race, and first login is exactly
+    // where it fires: GameProvider issues /user/profile and /farm/my in PARALLEL, so two
+    // callers can both observe count === 0 and both try to insert plot 0..5. The index
+    // rejects the loser with 23505, which escaped this method as an unhandled 500 — and
+    // only ever for a brand-new account, never for an existing one.
+    //
+    // orIgnore() maps to ON CONFLICT DO NOTHING, so the loser is a no-op while any plot
+    // genuinely missing from a half-provisioned account (older registerNewUser) is still
+    // backfilled.
+    await this.plotRepo
+      .createQueryBuilder()
+      .insert()
+      .into(FarmPlot)
+      .values(
+        Array.from({ length: initialPlots }, (_, i) => ({ userId, plotIndex: i })),
+      )
+      .orIgnore()
+      .execute();
   }
 
   getActiveSeasonalEvent(): string {
