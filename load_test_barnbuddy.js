@@ -343,7 +343,17 @@ function marketplaceFlow() {
 // ─────────────────────────────────────────────────────────────────
 // 5. SUMMARY — xuất JSON để so sánh giữa các lần chạy
 // ─────────────────────────────────────────────────────────────────
+// k6 accepts exactly ONE export of this name. The script previously carried two
+// (one for JSON + colored stdout, one for the Markdown report), which made k6
+// refuse to parse the file at all — "Duplicate export name handleSummary" — so
+// no run ever produced a report. This is the merged single implementation, doing
+// all three jobs the report pipeline needs:
+//   1. colored textSummary -> stdout
+//   2. load_test_summary.json -> metrics for run-over-run comparison
+//   3. /home/ubuntu/barnbuddy/load_test.md -> plain-text report
 export function handleSummary(data) {
+  // Threshold verdict first, so a failing run is obvious even after the long
+  // metric tables scroll past.
   const failures = [];
   for (const [metric, m] of Object.entries(data.metrics)) {
     if (m.thresholds) {
@@ -353,23 +363,19 @@ export function handleSummary(data) {
     }
   }
   const pass = failures.length === 0;
-  console.log(pass ? '\n✅ K6 THRESHOLDS PASSED\n' : `\n❌ K6 THRESHOLDS FAILED: ${failures.join(', ')}\n`);
+  console.log(
+    pass
+      ? '\n✅ K6 THRESHOLDS PASSED\n'
+      : `\n❌ K6 THRESHOLDS FAILED: ${failures.join(', ')}\n`,
+  );
+
+  // enableColors:false strips ANSI escapes. Without it load_test.md receives raw
+  // escape bytes that render as noise in editors and pollute git diffs.
+  const plain = textSummary(data, { indent: ' ', enableColors: false });
 
   return {
     stdout: textSummary(data, { indent: ' ', enableColors: true }),
     'load_test_summary.json': JSON.stringify(data, null, 2),
-  };
-}
-
-export function handleSummary(data) {
-  const summaryText = textSummary(data, { indent: ' ', enableColors: false });
-  
-  console.log(summaryText); // Vẫn in ra màn hình console
-
-  return {
-    stdout: textSummary(data, { indent: ' ', enableColors: true }),
-    'load_test_summary.json': JSON.stringify(data, null, 2),
-    // Thêm dòng này để k6 tự động tạo file load_test.md chứa toàn bộ báo cáo text
-    '/home/ubuntu/barnbuddy/load_test.md': summaryText, 
+    '/home/ubuntu/barnbuddy/load_test.md': plain,
   };
 }
