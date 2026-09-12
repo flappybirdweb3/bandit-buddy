@@ -18,6 +18,10 @@ const FARM_ADDRESS  = (import.meta.env.VITE_FARM_TOKEN_ADDRESS      || '0x000000
 const GAS_LIMIT_ESTIMATE = 280_000n;
 // Warn if BNB < this multiple of estimated gas cost
 const BNB_WARN_BUFFER = 1.3;
+// BanditDogFusion's constructor value for pullCost, used only when the chain read has not
+// returned yet (or failed). The live value always wins; keeping ONE constant for both the
+// gate and the copy is the point — they can never disagree.
+const DEFAULT_PULL_COST = 50;
 
 const GACHA_ABI = parseAbi([
   'function commit(bytes32 commitment) external',
@@ -218,6 +222,9 @@ export function GachaModal({ onClose }: Props) {
   const [bnbBalance,  setBnbBalance]  = useState<bigint | null>(null);
   const [farmBalance, setFarmBalance] = useState<bigint | null>(null);
   const [gasEstimate, setGasEstimate] = useState<bigint | null>(null);
+  // Live pull cost read from the contract — the button gate and every "$FARM" label are
+  // derived from this, not from a hardcoded 50.
+  const [pullCostWei, setPullCostWei] = useState<bigint | null>(null);
   const [balLoading,  setBalLoading]  = useState(false);
 
   const pk         = getStoredWalletPk();
@@ -231,15 +238,21 @@ export function GachaModal({ onClose }: Props) {
     try {
       const publicClient = createPublicClient({ chain: bscTestnet, transport: http(BSC_TESTNET_RPC) });
 
-      const [bnb, farm, gasPrice] = await Promise.all([
+      const [bnb, farm, gasPrice, pullCost] = await Promise.all([
         publicClient.getBalance({ address: walletAddr }),
         publicClient.readContract({ address: FARM_ADDRESS, abi: ERC20_ABI, functionName: 'balanceOf', args: [walletAddr] }) as Promise<bigint>,
         publicClient.getGasPrice(),
+        // Isolated on purpose: a failed pullCost() read must not blank the balances and gas
+        // estimate, which are independent reads. On failure it stays null and the derived
+        // value falls back to DEFAULT_PULL_COST.
+        (publicClient.readContract({ address: GACHA_ADDRESS, abi: GACHA_ABI, functionName: 'pullCost' }) as Promise<bigint>)
+          .catch(() => null),
       ]);
 
       setBnbBalance(bnb);
       setFarmBalance(farm);
       setGasEstimate(gasPrice * GAS_LIMIT_ESTIMATE);
+      setPullCostWei(pullCost);
     } catch {
       // silently skip — non-critical
     } finally {
@@ -358,7 +371,11 @@ export function GachaModal({ onClose }: Props) {
   const gasFloat    = gasEstimate !== null ? parseFloat(formatEther(gasEstimate)) : null;
   const isLowBnb    = bnbBalance !== null && gasEstimate !== null
     && bnbBalance < BigInt(Math.ceil(Number(gasEstimate) * BNB_WARN_BUFFER));
-  const insufficientFarm = farmFloat !== null && farmFloat < 50;
+  // Single source of truth for the pull price: the live on-chain value when we have it,
+  // the deployed default otherwise. Both the disabled state and the labels read this, so
+  // "Pull (N $FARM)" can never describe a different amount than the gate enforces.
+  const pullCostFarm = pullCostWei !== null ? Number(formatEther(pullCostWei)) : DEFAULT_PULL_COST;
+  const insufficientFarm = farmFloat !== null && farmFloat < pullCostFarm;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-end justify-center" onClick={onClose}>
@@ -376,7 +393,7 @@ export function GachaModal({ onClose }: Props) {
             <Gift size={18} className="text-violet-400" />
             <div>
               <h2 className="text-white font-black text-base leading-none">Guard Dog Gacha</h2>
-              <p className="text-white/40 text-xs">50 $FARM · Pity guaranteed at 10 pulls</p>
+              <p className="text-white/40 text-xs">{pullCostFarm} $FARM · Pity guaranteed at 10 pulls</p>
             </div>
           </div>
           <button onClick={onClose} className="glass rounded-full p-2 text-white/60 hover:text-white active:scale-90 transition-all">
@@ -417,7 +434,7 @@ export function GachaModal({ onClose }: Props) {
           {phase === 'idle' && !revealedTier && (
             <div className="rounded-3xl border border-white/10 bg-white/5 p-6 mb-3 flex flex-col items-center gap-2">
               <div className="text-6xl">🎲</div>
-              <p className="text-white/50 text-sm font-bold">50 $FARM per pull</p>
+              <p className="text-white/50 text-sm font-bold">{pullCostFarm} $FARM per pull</p>
               <p className="text-white/25 text-[10px] text-center leading-relaxed">
                 Commit-reveal RNG on BSC · NFT minted to your wallet
               </p>
@@ -489,7 +506,7 @@ export function GachaModal({ onClose }: Props) {
           {/* Insufficient FARM notice */}
           {hasWallet && insufficientFarm && phase === 'idle' && (
             <p className="text-amber-400/70 text-[10px] text-center mb-3">
-              You have {farmFloat?.toFixed(0)} $FARM — need 50 to pull.
+              You have {farmFloat?.toFixed(0)} $FARM — need {pullCostFarm} to pull.
             </p>
           )}
 
@@ -520,7 +537,7 @@ export function GachaModal({ onClose }: Props) {
                 ? <><Loader2 size={15} className="animate-spin" /> Processing…</>
                 : isLowBnb
                   ? <><AlertTriangle size={15} className="text-amber-300" /> Pull (Low BNB — may fail)</>
-                  : <><Zap size={15} /> Pull (50 $FARM)</>
+                  : <><Zap size={15} /> Pull ({pullCostFarm} $FARM)</>
               }
             </button>
           )}
