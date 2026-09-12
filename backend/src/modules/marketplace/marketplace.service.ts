@@ -82,11 +82,22 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
   // ── HTTP provider (FallbackProvider) — used by cronjob + initial polling ────
 
   private initHttpProvider(contractAddress: string): void {
-    const primary = this.config.get<string>('web3.bscRpcUrl') ?? 'https://bsc-dataseed1.binance.org/';
     const chainId = this.config.get<number>('web3.chainId') ?? 56;
+
+    // Primary default must follow the configured chain, exactly like the fallback list
+    // below. Defaulting to a mainnet dataseed unconditionally meant a testnet-configured
+    // backend had a mainnet primary and testnet fallbacks; with `quorum: 1` the event
+    // sweep could read logs from either chain depending on which node answered first.
+    const defaultPrimary = chainId === 97
+      ? 'https://bsc-testnet-rpc.publicnode.com'
+      : 'https://bsc-dataseed1.binance.org/';
+    const primary = this.config.get<string>('web3.bscRpcUrl') ?? defaultPrimary;
+
     const fallbacks = chainId === 97
       ? ['https://bsc-testnet-rpc.publicnode.com', 'https://endpoints.omniatech.io/v1/bsc/testnet/public']
       : ['https://bsc-dataseed2.binance.org/', 'https://bsc-dataseed3.binance.org/'];
+
+    this.logger.log(`Marketplace RPC chain id: ${chainId}`);
 
     this.provider = new ethers.FallbackProvider(
       [primary, ...fallbacks].map((url, i) => ({
@@ -479,7 +490,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       assetType, itemType, limit = 20, offset = 0,
       sortBy = 'createdAt', order = 'DESC',
       minPrice, maxPrice,
-    } = query;
+    } = query ?? {};
     const now = new Date();
 
     const qb = this.listingRepo
@@ -509,8 +520,22 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     };
     qb.orderBy(`l.${sortCol[sortBy] ?? 'createdAt'}`, order);
 
-    const total = await qb.getCount();
-    const listings = await qb.take(limit).skip(offset).getMany();
+    // A public browse endpoint must never 500. The two operational cases that used to
+    // surface as an unhandled exception are: the table not yet existing on a fresh
+    // database (relation "marketplace_listings" does not exist, i.e. migrations pending)
+    // and an empty result set. Neither is something the caller can act on, and both are
+    // correctly represented as "no listings available" rather than an error.
+    let total: number;
+    let listings: MarketplaceListing[];
+    try {
+      total = await qb.getCount();
+      listings = await qb.take(limit).skip(offset).getMany();
+    } catch (err) {
+      // Logged loudly on purpose: an empty marketplace and a broken query look identical
+      // to the client, so this line is the only way to tell them apart in production.
+      this.logger.error(`getListings query failed: ${(err as Error).message}`);
+      return { total: 0, offset, limit, items: [] };
+    }
 
     return {
       total,

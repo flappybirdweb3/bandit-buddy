@@ -45,6 +45,11 @@ export class Web3Controller {
       return { synced: 0, totalNftDefense: 0, dogs: [], message: 'No wallet linked' };
     }
     const result = await this.web3Service.syncGuardDogs(user.id, user.walletAddress);
+    // Degraded read: the wallet is being served from last-known-good DB state. Say so
+    // explicitly instead of "Synced 0", which reads like "you own no dogs".
+    if (result.unavailable) {
+      return { ...result, message: 'Blockchain network unavailable — showing cached NFT state' };
+    }
     return { ...result, message: `Synced ${result.synced} NFT dog(s)` };
   }
 

@@ -28,20 +28,45 @@ export default () => ({
     expiresIn: '7d',
   },
 
-  web3: {
-    signerPrivateKey: process.env.SIGNER_PRIVATE_KEY || '',
-    bscRpcUrl: process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org/',
-    chainId: parseInt(process.env.BSC_CHAIN_ID || '56', 10),
-    farmTokenAddress: process.env.FARM_TOKEN_ADDRESS || '',
-    claimContractAddress: process.env.CLAIM_CONTRACT_ADDRESS || '',
-    nftContractAddress: process.env.NFT_CONTRACT_ADDRESS || '',
-    marketContractAddress: process.env.MARKET_CONTRACT_ADDRESS || '',
-    gachaContractAddress: process.env.GACHA_CONTRACT_ADDRESS || '',
-    guildStakingAddress: process.env.GUILD_STAKING_ADDRESS || '',
-    treasuryContractAddress: process.env.TREASURY_CONTRACT_ADDRESS || '',
-    depositTreasuryAddress: process.env.DEPOSIT_TREASURY_ADDRESS || '',
-    bscWssUrl: process.env.BSC_WSS_URL || '',
-  },
+  // Chain id drives every chain-specific default below, so resolve it first and derive
+  // the RPC endpoint from it. Previously `chainId` and `bscRpcUrl` were resolved
+  // INDEPENDENTLY: setting BSC_CHAIN_ID=97 alone still handed out a MAINNET dataseed
+  // node, and both Web3Service and MarketplaceService then built a FallbackProvider
+  // whose primary spoke mainnet while its fallbacks spoke testnet. With `quorum: 1`
+  // ethers accepts whichever endpoint answers first, so reads could silently mix chains.
+  web3: (() => {
+    const SUPPORTED_CHAIN_IDS = new Set([56, 97]); // 56 = BSC mainnet, 97 = BSC testnet
+    const parsedChainId = parseInt(process.env.BSC_CHAIN_ID ?? '56', 10);
+    const chainId = SUPPORTED_CHAIN_IDS.has(parsedChainId) ? parsedChainId : 56;
+
+    if (!SUPPORTED_CHAIN_IDS.has(parsedChainId)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[config] BSC_CHAIN_ID="${process.env.BSC_CHAIN_ID}" is neither 56 (mainnet) ` +
+          `nor 97 (testnet) — falling back to 56.`,
+      );
+    }
+
+    const defaultRpcUrl = chainId === 97
+      ? 'https://bsc-testnet-rpc.publicnode.com'
+      : 'https://bsc-dataseed.binance.org/';
+
+    return {
+      signerPrivateKey: process.env.SIGNER_PRIVATE_KEY || '',
+      chainId,
+      isTestnet: chainId === 97,
+      bscRpcUrl: process.env.BSC_RPC_URL || defaultRpcUrl,
+      farmTokenAddress: process.env.FARM_TOKEN_ADDRESS || '',
+      claimContractAddress: process.env.CLAIM_CONTRACT_ADDRESS || '',
+      nftContractAddress: process.env.NFT_CONTRACT_ADDRESS || '',
+      marketContractAddress: process.env.MARKET_CONTRACT_ADDRESS || '',
+      gachaContractAddress: process.env.GACHA_CONTRACT_ADDRESS || '',
+      guildStakingAddress: process.env.GUILD_STAKING_ADDRESS || '',
+      treasuryContractAddress: process.env.TREASURY_CONTRACT_ADDRESS || '',
+      depositTreasuryAddress: process.env.DEPOSIT_TREASURY_ADDRESS || '',
+      bscWssUrl: process.env.BSC_WSS_URL || '',
+    };
+  })(),
 
   admin: {
     passcode: process.env.ADMIN_PASSCODE || '',

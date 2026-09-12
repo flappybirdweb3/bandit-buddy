@@ -36,13 +36,50 @@ export type NftSyncResult = {
   totalNftDefense: number;
   dogs: Array<{ tokenId: number; dogType: string; defensePower: number; balance: number }>;
   shards?: number;
+  /**
+   * True when the chain read could not be performed (node down / timeout / RPC error).
+   * The caller is looking at last-known-good state, not at a genuinely empty wallet —
+   * the two must stay distinguishable so the UI can say "try again" instead of
+   * "you own no dogs".
+   */
+  unavailable?: boolean;
 };
+
+/**
+ * True when an error originated in the RPC transport rather than in our own logic.
+ *
+ * ethers v6 tags transport problems with `code` (NETWORK_ERROR / TIMEOUT / SERVER_ERROR)
+ * and keeps the underlying fetch/node error on `cause`. An unreachable or rate-limited
+ * node is an operational condition, not a defect: callers should degrade to stale/default
+ * data instead of surfacing an unhandled 500. Everything else — a decode error, a DB
+ * constraint, a bad address — is rethrown untouched so real bugs stay loud.
+ */
+function isRpcFailure(err: unknown): boolean {
+  const code = (err as { code?: unknown })?.code;
+  if (
+    typeof code === 'string' &&
+    ['NETWORK_ERROR', 'TIMEOUT', 'SERVER_ERROR'].includes(code)
+  ) {
+    return true;
+  }
+
+  const message = [
+    (err as Error)?.message ?? '',
+    (err as { cause?: Error })?.cause?.message ?? '',
+  ].join(' ');
+
+  return /could not detect network|missing response|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up|fetch failed|rate limit|timeout/i
+    .test(message);
+}
 
 @Injectable()
 export class Web3Service {
   private readonly logger = new Logger(Web3Service.name);
   private adminWallet: ethers.Wallet | null = null;
   private provider: ethers.FallbackProvider | null = null;
+
+  /** Chain id actually served by the RPC endpoints, cached after the first successful probe. */
+  private resolvedChainId: bigint | undefined;
 
   constructor(
     private readonly config: ConfigService,
@@ -65,8 +102,16 @@ export class Web3Service {
 
   /** #44: Ethers.js v6 FallbackProvider with ordered RPC endpoints. */
   private _buildFallbackProvider(): ethers.FallbackProvider {
-    const primary = this.config.get<string>('web3.bscRpcUrl') ?? 'https://bsc-dataseed1.binance.org/';
     const chainId = this.config.get<number>('web3.chainId') ?? 56;
+
+    // The primary default MUST be chosen from the same chain id as the fallbacks. This
+    // used to default to a mainnet dataseed node unconditionally, so a testnet-configured
+    // process ended up with a mainnet primary and testnet fallbacks — and with `quorum: 1`
+    // ethers takes whichever answers first, mixing chains inside a single read.
+    const defaultPrimary = chainId === 97
+      ? 'https://bsc-testnet-rpc.publicnode.com'
+      : 'https://bsc-dataseed1.binance.org/';
+    const primary = this.config.get<string>('web3.bscRpcUrl') ?? defaultPrimary;
 
     const fallbacks = chainId === 97
       ? ['https://bsc-testnet-rpc.publicnode.com', 'https://endpoints.omniatech.io/v1/bsc/testnet/public']
@@ -79,6 +124,39 @@ export class Web3Service {
       weight: 1,
     }));
     return new ethers.FallbackProvider(networks, undefined, { quorum: 1 });
+  }
+
+  /**
+   * Resolve the chain id the RPC endpoints are actually serving, once per process.
+   *
+   * Every claim signature binds this value (FarmTokenClaim.hashMessage() uses
+   * block.chainid), so reading it from the live node — not from config — is what keeps
+   * backend and contract in agreement. Config is used only as a sanity check: a mismatch
+   * means BSC_CHAIN_ID and BSC_RPC_URL point at different networks, which would produce
+   * signatures the intended contract can never accept.
+   *
+   * ethers caches the network after the first successful probe, so this is one RPC call
+   * per process lifetime, not one per claim. Transport failures propagate as-is so the
+   * caller can decide how to degrade.
+   */
+  private async resolveChainId(): Promise<bigint> {
+    const network = await this.provider!.getNetwork();
+    const rpcChainId = BigInt(network.chainId);
+
+    if (this.resolvedChainId === undefined) {
+      this.resolvedChainId = rpcChainId;
+
+      const configuredChainId = Number(this.config.get<number>('web3.chainId'));
+      if (Number.isFinite(configuredChainId) && BigInt(configuredChainId) !== rpcChainId) {
+        this.logger.error(
+          `Chain id mismatch: web3.chainId=${configuredChainId} but the RPC reports ${rpcChainId}. ` +
+            `Signatures bind the RPC chain id — set BSC_CHAIN_ID=${rpcChainId} and point ` +
+            `BSC_RPC_URL at the same network to avoid mixed-chain reads.`,
+        );
+      }
+    }
+
+    return this.resolvedChainId;
   }
 
   async generateClaimSignature(user: User, amountToClaim: number) {
@@ -143,13 +221,14 @@ export class Web3Service {
       );
     }
 
-    const configuredChainId = Number(this.config.get<number>('web3.chainId'));
-    const rpcChainId = (await this.provider!.getNetwork()).chainId;
-    if (Number.isFinite(configuredChainId) && BigInt(configuredChainId) !== rpcChainId) {
-      this.logger.error(
-        `Chain id mismatch: web3.chainId=${configuredChainId} but RPC reports ${rpcChainId}. ` +
-          `Signatures bind the RPC chain id — set BSC_CHAIN_ID=${rpcChainId} or point ` +
-          `BSC_RPC_URL at the intended network.`,
+    // Reads the live chain id; a transient node outage here is a 503, never a 500.
+    let rpcChainId: bigint;
+    try {
+      rpcChainId = await this.resolveChainId();
+    } catch (err) {
+      this.logger.warn(`Cannot resolve chain id: ${(err as Error).message}`);
+      throw new ServiceUnavailableException(
+        'Blockchain network unavailable — please retry shortly',
       );
     }
 
@@ -409,14 +488,27 @@ export class Web3Service {
       return { synced: 0, totalNftDefense: 0, dogs: [] };
     }
 
+    // Stage 1 — chain read. Isolated from the DB work below on purpose: a node outage is
+    // an expected operational condition that must degrade to "last known state" (this is
+    // a refresh endpoint), while a genuine DB failure must stay visible rather than being
+    // reported as "you own no dogs".
+    let balances: bigint[];
     try {
-      const contract = new ethers.Contract(nftContractAddress, ERC1155_ABI, this.provider);
-
       // Single RPC call: 6 dog breeds + Soul Shards (ID 9999)
-      const allTokenIds  = [...TOKEN_IDS, SOUL_SHARD_ID];
-      const accounts     = allTokenIds.map(() => walletAddress);
-      const balances: bigint[] = await contract.balanceOfBatch(accounts, allTokenIds);
+      const contract = new ethers.Contract(nftContractAddress, ERC1155_ABI, this.provider);
+      const allTokenIds = [...TOKEN_IDS, SOUL_SHARD_ID];
+      const accounts = allTokenIds.map(() => walletAddress);
+      balances = await contract.balanceOfBatch(accounts, allTokenIds);
+    } catch (err) {
+      if (!isRpcFailure(err)) throw err;
+      this.logger.warn(
+        `NFT sync skipped — RPC unavailable for ${walletAddress}: ${(err as Error).message}`,
+      );
+      return { synced: 0, totalNftDefense: 0, dogs: [], unavailable: true };
+    }
 
+    // Stage 2 — persist what the chain reported. Errors here are ours and must surface.
+    try {
       const shardBalance = Number(balances[TOKEN_IDS.length]); // index 6 = soul shard
 
       const ownedDogs = TOKEN_IDS
@@ -646,10 +738,19 @@ export class Web3Service {
         if (this.provider && this.adminWallet) {
           const farmTokenAddress = this.config.get<string>('web3.farmTokenAddress') ?? '';
           if (farmTokenAddress && farmTokenAddress.length > 10) {
-            const erc20ABI = ['function balanceOf(address) view returns (uint256)'];
-            const token = new ethers.Contract(farmTokenAddress, erc20ABI, this.provider);
-            const bal = await token.balanceOf(this.adminWallet.address) as bigint;
-            farmInTreasury = Number(ethers.formatEther(bal));
+            // Contained RPC read: a node outage here must not abort the whole cron and
+            // reset the cached rate to the 1.0 default. Treasury balance is a bonus
+            // signal — 0 simply means "ratio unavailable", which the response reports.
+            try {
+              const erc20ABI = ['function balanceOf(address) view returns (uint256)'];
+              const token = new ethers.Contract(farmTokenAddress, erc20ABI, this.provider);
+              const bal = await token.balanceOf(this.adminWallet.address) as bigint;
+              farmInTreasury = Number(ethers.formatEther(bal));
+            } catch (err) {
+              this.logger.warn(
+                `Treasury FARM balance unavailable: ${(err as Error).message}`,
+              );
+            }
           }
         }
         this.cachedGoldCirculating = goldCirc;
@@ -660,8 +761,16 @@ export class Web3Service {
         this.cachedPriceSource = 'treasury_ratio';
       }
 
-      const ks = await this.redis.get('kill_switch:active');
-      this.cachedKillSwitchActive = !!ks;
+      // Redis is a separate dependency from the chain. A blip must not discard a rate
+      // we just computed from DEX prices — keep the last known kill-switch state.
+      try {
+        const ks = await this.redis.get('kill_switch:active');
+        this.cachedKillSwitchActive = !!ks;
+      } catch (err) {
+        this.logger.warn(
+          `Kill-switch state unavailable, keeping last known value: ${(err as Error).message}`,
+        );
+      }
     } catch {
       this.cachedRate = 1.0;
     } finally {
@@ -728,20 +837,31 @@ export class Web3Service {
     );
     if (already.length > 0) throw new BadRequestException('Transaction already processed');
 
-    // Fetch the receipt from chain
+    // Both the receipt fetch and queryFilter() are pure chain reads, so a transport
+    // hiccup must degrade to "upstream unavailable" instead of crashing the request.
+    // Previously only getTransactionReceipt was guarded: a queryFilter() failure escaped
+    // this method entirely and surfaced as an unhandled 500 even though the deposit the
+    // player submitted may be perfectly valid and simply need a retry.
     let receipt: ethers.TransactionReceipt | null;
+    let logs: Array<ethers.Log | ethers.EventLog>;
     try {
       receipt = await this.provider.getTransactionReceipt(txHash);
-    } catch {
-      throw new BadRequestException('Failed to fetch transaction from blockchain');
-    }
-    if (!receipt) throw new BadRequestException('Transaction not found or not yet confirmed');
-    if (receipt.status !== 1) throw new BadRequestException('Transaction reverted on-chain');
+      if (!receipt) throw new BadRequestException('Transaction not found or not yet confirmed');
+      if (receipt.status !== 1) throw new BadRequestException('Transaction reverted on-chain');
 
-    // Parse Transfer events from the FarmToken contract
-    const farmContract = new ethers.Contract(farmTokenAddress, this.ERC20_ABI, this.provider);
-    const transferFilter = farmContract.filters.Transfer(null, treasuryAddress);
-    const logs = await farmContract.queryFilter(transferFilter, receipt.blockNumber, receipt.blockNumber);
+      // Parse Transfer events from the FarmToken contract
+      const farmContract = new ethers.Contract(farmTokenAddress, this.ERC20_ABI, this.provider);
+      const transferFilter = farmContract.filters.Transfer(null, treasuryAddress);
+      logs = await farmContract.queryFilter(transferFilter, receipt.blockNumber, receipt.blockNumber);
+    } catch (err) {
+      // The BadRequestException above is a verdict about the transaction itself, not a
+      // transport failure — it keeps its 400 semantics.
+      if (err instanceof BadRequestException) throw err;
+      this.logger.warn(`Deposit verify RPC failed for ${txHash}: ${(err as Error).message}`);
+      throw new ServiceUnavailableException(
+        'Blockchain network unavailable — please retry shortly',
+      );
+    }
 
     // Find Transfer log matching this txHash and sender = user's wallet
     const senderLower = user.walletAddress.toLowerCase();
@@ -810,8 +930,15 @@ export class Web3Service {
     this.logger.log(`Scheduled NFT sync: processing ${users.length} users`);
 
     for (const user of users) {
-      if (user.walletAddress) {
+      if (!user.walletAddress) continue;
+      // One user's failure must not abort the sweep for everyone queued behind them —
+      // the scheduler would otherwise lose the remainder of the batch.
+      try {
         await this.syncGuardDogs(user.id, user.walletAddress);
+      } catch (err) {
+        this.logger.warn(
+          `Scheduled NFT sync failed for ${user.id}: ${(err as Error).message}`,
+        );
       }
     }
   }
