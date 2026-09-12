@@ -115,7 +115,8 @@ def test_success_writes_report_to_game_qa_md(run_script, tmp_path, capsys):
     assert captured["timeout"] == 120
 
     payload = captured["payload"]
-    assert payload["model"] == "deepseek-chat"
+    assert payload["model"] == "deepseek-reasoner"
+    assert "temperature" not in payload  # deepseek-reasoner không hỗ trợ temperature
     assert payload["stream"] is False
     assert payload["messages"][0]["role"] == "system"
     assert "Bandit Buddy" in payload["messages"][0]["content"]
@@ -209,3 +210,43 @@ def test_report_is_written_to_cwd_not_target_dir(run_script, tmp_path):
     # Script luôn ghi vào game_qa.md của CWD, không rơi vào TARGET_DIR
     assert (tmp_path / REPORT_FILE).is_file()
     assert not (project / REPORT_FILE).exists()
+
+
+def test_report_path_env_overrides_default(run_script, tmp_path):
+    project = make_project(tmp_path)
+    custom = tmp_path / "custom_report.md"
+
+    run_script(
+        env={
+            "DEEPSEEK_API_KEY": "k",
+            "TARGET_DIR": str(project),
+            "REPORT_PATH": str(custom),
+        },
+        post_impl=lambda *a, **kw: FakeResponse(
+            200, {"choices": [{"message": {"content": "# CUSTOM"}}]}
+        ),
+    )
+
+    assert custom.read_text(encoding="utf-8") == "# CUSTOM"
+    assert not (tmp_path / REPORT_FILE).exists()
+
+
+def test_chat_model_keeps_temperature(run_script, tmp_path):
+    project = make_project(tmp_path)
+    captured = {}
+
+    def fake_post(url, headers=None, data=None, timeout=None):
+        captured["payload"] = json.loads(data)
+        return FakeResponse(200, {"choices": [{"message": {"content": "# QA"}}]})
+
+    run_script(
+        env={
+            "DEEPSEEK_API_KEY": "k",
+            "TARGET_DIR": str(project),
+            "DEEPSEEK_MODEL": "deepseek-chat",
+        },
+        post_impl=fake_post,
+    )
+
+    assert captured["payload"]["model"] == "deepseek-chat"
+    assert captured["payload"]["temperature"] == 0.3
