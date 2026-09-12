@@ -31,6 +31,21 @@ const publicClient = createPublicClient({
   transport: http(BSC_TESTNET_RPC),
 });
 
+function friendlyError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/total cost|insufficient funds|gas.*balance|balance.*gas/i.test(msg))
+    return '⛽ Not enough BNB for gas. Send tBNB to your wallet first.';
+  if (/user rejected|user denied|rejected the request/i.test(msg))
+    return 'Transaction cancelled.';
+  if (/nonce.*already used|NonceAlreadyUsed/i.test(msg))
+    return 'This claim was already processed (nonce used).';
+  if (/execution reverted/i.test(msg))
+    return 'Contract rejected transaction. Check your gold balance and try again.';
+  if (/network|timeout|fetch/i.test(msg))
+    return 'Network error. Check connection and try again.';
+  return msg.length > 120 ? msg.slice(0, 120) + '…' : msg;
+}
+
 export type ClaimStep =
   | 'idle'
   | 'requesting_sig'
@@ -41,9 +56,12 @@ export type ClaimStep =
 
 export function useClaimTokens() {
   const qc = useQueryClient();
-  const [step, setStep] = useState<ClaimStep>('idle');
-  const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [step,         setStep]         = useState<ClaimStep>('idle');
+  const [txHash,       setTxHash]       = useState<`0x${string}` | null>(null);
+  const [error,        setError]        = useState<string | null>(null);
+  const [pendingNonce, setPendingNonce] = useState<number | null>(null);
+  const [refundable,   setRefundable]   = useState(false);
+  const [refunding,    setRefunding]    = useState(false);
 
   const claim = async (goldAmount: number) => {
     const pk = getStoredWalletPk();
@@ -54,10 +72,18 @@ export function useClaimTokens() {
 
     setError(null);
     setTxHash(null);
+    setPendingNonce(null);
+    setRefundable(false);
+
+    // Local tracker — state updates are async so we can't read pendingNonce in catch
+    let receivedNonce: number | null = null;
 
     try {
       setStep('requesting_sig');
       const payload = await api.claimSignature(goldAmount);
+      // GOLD was deducted server-side — track nonce for potential refund
+      receivedNonce = payload.nonce;
+      setPendingNonce(payload.nonce);
 
       const account = privateKeyToAccount(pk);
       const walletClient = createWalletClient({
@@ -84,11 +110,32 @@ export function useClaimTokens() {
       await publicClient.waitForTransactionReceipt({ hash });
 
       setStep('success');
+      // Mark intent as completed (best-effort)
+      api.markClaimCompleted(payload.nonce).catch(() => {});
       qc.invalidateQueries({ queryKey: ['profile'] });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Claim failed';
-      setError(msg.length > 120 ? msg.slice(0, 120) + '…' : msg);
+      setError(friendlyError(err));
       setStep('error');
+      // Only show Refund button if GOLD was actually deducted (nonce received from server)
+      if (receivedNonce !== null) {
+        setRefundable(true);
+      }
+    }
+  };
+
+  const refund = async () => {
+    if (pendingNonce === null) return;
+    setRefunding(true);
+    try {
+      await api.refundClaim(pendingNonce);
+      setPendingNonce(null);
+      setRefundable(false);
+      qc.invalidateQueries({ queryKey: ['profile'] });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Refund failed';
+      setError(msg.length > 120 ? msg.slice(0, 120) + '…' : msg);
+    } finally {
+      setRefunding(false);
     }
   };
 
@@ -96,9 +143,11 @@ export function useClaimTokens() {
     setStep('idle');
     setError(null);
     setTxHash(null);
+    setPendingNonce(null);
+    setRefundable(false);
   };
 
-  return { claim, step, txHash, error, reset };
+  return { claim, refund, step, txHash, error, reset, refundable, refunding };
 }
 
 export async function getWalletBnbBalance(address: `0x${string}`): Promise<bigint> {
