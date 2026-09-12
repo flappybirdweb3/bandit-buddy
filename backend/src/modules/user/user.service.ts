@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan, ILike } from 'typeorm';
 import { User } from './entities/user.entity';
@@ -135,9 +135,39 @@ export class UserService {
    * retried the same event forever. Storing lowercase makes writer and readers agree.
    *
    * Checksum casing remains a display concern; the chain treats both forms identically.
+   *
+   * ONE ACCOUNT, ONE WALLET. This used to be an unconditional UPDATE. Because the client
+   * generates its key locally (localStorage), opening the same Telegram account on a
+   * second device generated a SECOND key and silently overwrote wallet_address — the
+   * account then reported a different wallet on every machine, and any $FARM already held
+   * by the first wallet became unreachable (nobody holds that key any more). The client
+   * now imports the existing key; the server refuses to move it.
    */
   async updateWalletAddress(userId: string, walletAddress: string): Promise<void> {
-    await this.userRepo.update(userId, { walletAddress: walletAddress.toLowerCase() });
+    const canonical = walletAddress.toLowerCase();
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (user.walletAddress && user.walletAddress.toLowerCase() !== canonical) {
+      throw new ConflictException(
+        "This account already has a linked wallet. Import that wallet's private key on " +
+          'this device instead of creating a new one.',
+      );
+    }
+
+    if (user.walletAddress === canonical) return; // already linked here — nothing to do
+
+    // The DB also enforces this via UQ_users_wallet_address; checking first turns a raw
+    // 23505 into an actionable 409 instead of a 500.
+    const owner = await this.userRepo.findOne({
+      where: { walletAddress: canonical },
+      select: ['id'],
+    });
+    if (owner && owner.id !== userId) {
+      throw new ConflictException('This wallet is already linked to another account');
+    }
+
+    await this.userRepo.update(userId, { walletAddress: canonical });
   }
 
   async findById(id: string): Promise<User> {

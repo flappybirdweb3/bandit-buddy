@@ -21,6 +21,11 @@ export default () => ({
     botUsername: process.env.TELEGRAM_BOT_USERNAME || 'BanditBuddyBot',
     webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
     appUrl: process.env.APP_URL || 'https://flappyx.com',
+    // Max age of an accepted initData payload (seconds). Telegram only guarantees the
+    // payload is fresh at Mini App open; the guard refuses anything older, so a leaked
+    // initData string cannot be replayed indefinitely. Override with
+    // TELEGRAM_INITDATA_MAX_AGE_SEC if users routinely keep the app open for days.
+    initDataMaxAgeSec: parseInt(process.env.TELEGRAM_INITDATA_MAX_AGE_SEC ?? '86400', 10) || 86400,
   },
 
   jwt: {

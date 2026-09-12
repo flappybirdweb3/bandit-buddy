@@ -24,10 +24,8 @@ import { DataSource } from 'typeorm';
 
 // ── Auth header ───────────────────────────────────────────────────────────────
 //
-// TelegramAuthGuard accepts x-telegram-init-data directly, but it only skips HMAC
-// validation when no bot token is configured:
-//
-//   const isDev = !botToken || botToken === 'your_telegram_bot_token_here';
+// TelegramAuthGuard accepts x-telegram-init-data and ALWAYS verifies its HMAC — there is
+// no unauthenticated fallback, so a literal `hash=devhash` payload is rejected with 401.
 //
 // TELEGRAM_BOT_TOKEN IS loaded from ../.env in this environment, so the guard always ran
 // a real HMAC check and rejected the old literal `hash=devhash` — every authenticated
@@ -57,11 +55,24 @@ function makeInitData(telegramId: number, username: string): string {
   const botToken = process.env.TELEGRAM_BOT_TOKEN ?? '';
 
   if (!botToken || botToken === 'your_telegram_bot_token_here') {
-    // Same condition as the guard's dev bypass — keep working without a token.
-    return `user=${encodeURIComponent(mockUser)}&hash=devhash`;
+    // The guard has no unauthenticated fallback: an unsigned `hash=devhash` payload is a
+    // hard 401, so every authenticated assertion below would fail for a reason unrelated
+    // to the code under test. Refuse to run rather than report a misleading red suite.
+    throw new Error(
+      'TELEGRAM_BOT_TOKEN must be set (backend/.env) to run this e2e suite: the auth ' +
+        'guard only accepts HMAC-signed initData and no longer has a dev bypass.',
+    );
   }
 
-  return `user=${encodeURIComponent(mockUser)}&hash=${signInitData({ user: mockUser }, botToken)}`;
+  // auth_date is part of the signed payload AND the guard rejects stale values, so it must
+  // be present and current — a frozen timestamp would start failing after 24h.
+  const fields = {
+    auth_date: String(Math.floor(Date.now() / 1000)),
+    user: mockUser,
+  };
+  return `${Object.keys(fields)
+    .map((k) => `${k}=${encodeURIComponent(fields[k])}`)
+    .join('&')}&hash=${signInitData(fields, botToken)}`;
 }
 
 // Fresh IDs per run. farm_plots references users WITHOUT ON DELETE CASCADE, so afterAll's

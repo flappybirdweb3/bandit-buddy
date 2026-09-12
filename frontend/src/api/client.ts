@@ -10,25 +10,14 @@ import type {
 const BASE_URL = '/api';
 
 function getInitData(): string {
-  if (WebApp.initData) return WebApp.initData;
-
-  // Production without Telegram WebView → return empty so auth guard rejects with 401
-  // The App component detects this and shows NotInTelegramScreen
-  if (import.meta.env.PROD) return '';
-
-  // Local dev only: stable unique user per browser so different browsers get separate accounts
-  const DEV_ID_KEY = 'bb_dev_tg_id';
-  let devId = localStorage.getItem(DEV_ID_KEY);
-  if (!devId) {
-    devId = String(100_000_000 + Math.floor(Math.random() * 900_000_000));
-    localStorage.setItem(DEV_ID_KEY, devId);
-  }
-  const mockUser = JSON.stringify({
-    id: parseInt(devId, 10),
-    first_name: 'Dev',
-    username: `dev_${devId.slice(-4)}`,
-  });
-  return `user=${encodeURIComponent(mockUser)}&hash=devhash`;
+  // initData from the Telegram Mini App runtime is the ONLY accepted credential.
+  //
+  // There is deliberately NO dev fallback. A synthesised id (or one read back out of
+  // localStorage) is different on every browser profile, so the same Telegram account
+  // landed on a brand-new user row — with its own wallet, gold and farm — on every
+  // machine. Empty here now means "not launched from Telegram", which the auth guard
+  // answers with 401 and App.tsx renders as NotInTelegramScreen.
+  return WebApp.initData ?? '';
 }
 
 // Auth via cookie (bb_sess) set by GET /api/auth/session.
