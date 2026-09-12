@@ -93,10 +93,10 @@ try:
             
             print("\n================ 🔥 BÁO CÁO KIỂM THỬ GAME TỪ DEEPSEEK QA ================\n")
             
-            with open("game_report.md", "w", encoding="utf-8") as md_file:
+            with open("game_qa.md", "w", encoding="utf-8") as md_file:
                 md_file.write(report_content)
             
-            print("✅ Đã lưu file 'game_report.md'. Hãy mở ra để đánh giá chất lượng test case!")
+            print("✅ Đã lưu file 'game_qa.md'. Hãy mở ra để đánh giá chất lượng test case!")
         else:
             print("❌ Lỗi cấu trúc JSON từ DeepSeek.")
     else:
