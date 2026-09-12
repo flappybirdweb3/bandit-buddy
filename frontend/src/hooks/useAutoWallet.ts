@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import type { UserProfile } from '@/types/game.types';
 
@@ -8,16 +9,13 @@ const WALLET_SETUP_SHOWN_KEY = 'bb_wallet_setup_shown';
 export function useAutoWallet(profile: UserProfile | undefined) {
   const [showSetup, setShowSetup] = useState(false);
   const ran = useRef(false);
+  const qc = useQueryClient();
 
   useEffect(() => {
     if (!profile || ran.current) return;
-
-    const existingPk = localStorage.getItem(WALLET_PK_KEY) as `0x${string}` | null;
-
-    if (profile.walletAddress && existingPk) return;
-
     ran.current = true;
 
+    const existingPk = localStorage.getItem(WALLET_PK_KEY) as `0x${string}` | null;
     const alreadyShown = localStorage.getItem(WALLET_SETUP_SHOWN_KEY) === '1';
 
     // Lazy-load viem — keeps it out of the initial bundle
@@ -35,9 +33,15 @@ export function useAutoWallet(profile: UserProfile | undefined) {
 
       const account = privateKeyToAccount(pk);
 
-      api.updateWallet(account.address).catch(() => {
-        // Best-effort — will retry on next load
-      });
+      // Always sync: update DB if address is missing or PK doesn't match stored walletAddress
+      if (
+        !profile.walletAddress ||
+        account.address.toLowerCase() !== profile.walletAddress.toLowerCase()
+      ) {
+        api.updateWallet(account.address)
+          .then(() => qc.invalidateQueries({ queryKey: ['profile'] }))
+          .catch(() => {});
+      }
 
       if (isNew && !alreadyShown) {
         setShowSetup(true);
