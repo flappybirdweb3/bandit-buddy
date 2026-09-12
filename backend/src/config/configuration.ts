@@ -20,7 +20,7 @@ export default () => ({
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     botUsername: process.env.TELEGRAM_BOT_USERNAME || 'BanditBuddyBot',
     webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
-    appUrl: process.env.APP_URL || 'https://bandit.wvnd.vn',
+    appUrl: process.env.APP_URL || 'https://flappyx.com',
   },
 
   jwt: {
@@ -31,12 +31,16 @@ export default () => ({
   web3: {
     signerPrivateKey: process.env.SIGNER_PRIVATE_KEY || '',
     bscRpcUrl: process.env.BSC_RPC_URL || 'https://bsc-dataseed.binance.org/',
+    chainId: parseInt(process.env.BSC_CHAIN_ID || '56', 10),
     farmTokenAddress: process.env.FARM_TOKEN_ADDRESS || '',
     claimContractAddress: process.env.CLAIM_CONTRACT_ADDRESS || '',
     nftContractAddress: process.env.NFT_CONTRACT_ADDRESS || '',
     marketContractAddress: process.env.MARKET_CONTRACT_ADDRESS || '',
     gachaContractAddress: process.env.GACHA_CONTRACT_ADDRESS || '',
     guildStakingAddress: process.env.GUILD_STAKING_ADDRESS || '',
+    treasuryContractAddress: process.env.TREASURY_CONTRACT_ADDRESS || '',
+    depositTreasuryAddress: process.env.DEPOSIT_TREASURY_ADDRESS || '',
+    bscWssUrl: process.env.BSC_WSS_URL || '',
   },
 
   admin: {
