@@ -1,9 +1,13 @@
-import { IsNumber, IsPositive, Min, IsBoolean, IsString, IsUUID, Matches } from 'class-validator';
+import { IsNumber, IsInt, IsPositive, Min, IsBoolean, IsString, IsUUID, Matches } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ClaimSignatureDto {
   @Type(() => Number)
   @IsNumber()
+  // GOLD is an integer currency. A fractional amount survives parseUnits() as a non-round
+  // wei value and matches nothing the UI can express, so reject it at the edge instead of
+  // deducting GOLD for a claim the player never intended.
+  @IsInt()
   @IsPositive()
   @Min(1)
   amountToClaim: number;

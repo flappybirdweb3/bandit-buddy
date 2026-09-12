@@ -434,28 +434,42 @@ export class Web3Service {
       throw new BadRequestException('No pending claim found for this nonce — already refunded or completed.');
     }
 
-    // On-chain check: verify the nonce was never used on-chain (5s timeout)
+    // Confirming the nonce is STILL unused on-chain is the ONLY thing that stops a
+    // double-spend: a refund credits GOLD, so if the claim tx later confirms the player
+    // holds both the GOLD and the FARM. It therefore FAILS CLOSED — an unverifiable
+    // state is not permission to pay out. (It used to proceed with the refund when the
+    // RPC errored, which is exactly the condition a flapping node produces.)
     const claimContractAddress = this.config.get<string>('web3.claimContractAddress') ?? '';
-    if (this.provider && claimContractAddress && claimContractAddress.length > 10) {
-      try {
-        const contract = new ethers.Contract(
-          claimContractAddress,
-          ['function isNonceUsed(address,uint256) external view returns (bool)'],
-          this.provider,
-        );
-        const checkWithTimeout = Promise.race([
-          contract.isNonceUsed(intent.walletAddress, nonce) as Promise<boolean>,
-          new Promise<boolean>((_, reject) => setTimeout(() => reject(new Error('RPC timeout')), 5000)),
-        ]);
-        const nonceUsed = await checkWithTimeout;
-        if (nonceUsed) {
-          await this.dataSource.manager.update(ClaimIntent, { id: intent.id }, { status: 'completed' });
-          throw new BadRequestException('Claim was already confirmed on-chain — no refund possible.');
-        }
-      } catch (err) {
-        if (err instanceof BadRequestException) throw err;
-        this.logger.warn(`On-chain nonce check skipped: ${(err as Error).message} — proceeding with refund`);
-      }
+    if (!this.provider || !ethers.isAddress(claimContractAddress)) {
+      throw new ServiceUnavailableException(
+        'Cannot verify claim status on-chain right now — please retry the refund in a moment.',
+      );
+    }
+
+    let nonceUsed: boolean;
+    try {
+      const contract = new ethers.Contract(
+        claimContractAddress,
+        ['function isNonceUsed(address,uint256) external view returns (bool)'],
+        this.provider,
+      );
+      nonceUsed = await this.withDeadline(
+        contract.isNonceUsed(intent.walletAddress, nonce) as Promise<boolean>,
+        this.rpcRequestDeadlineMs,
+        'isNonceUsed()',
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Refund blocked — could not verify nonce ${nonce} on-chain: ${(err as Error).message}`,
+      );
+      throw new ServiceUnavailableException(
+        'Blockchain network is unavailable — please retry the refund in a moment.',
+      );
+    }
+
+    if (nonceUsed) {
+      await this.dataSource.manager.update(ClaimIntent, { id: intent.id }, { status: 'completed' });
+      throw new BadRequestException('Claim was already confirmed on-chain — no refund needed.');
     }
 
     const queryRunner = this.dataSource.createQueryRunner();

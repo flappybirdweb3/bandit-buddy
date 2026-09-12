@@ -20,6 +20,10 @@ const FARM_ADDRESS     = (import.meta.env.VITE_FARM_TOKEN_ADDRESS || '0x00000000
 const CLAIM_GAS_LIMIT  = 180_000n;
 const MIN_BNB_FOR_GAS  = BigInt('2000000000000000'); // 0.002 BNB
 const BNB_WARN_BUFFER  = 1.3;
+// Mirrors FarmTokenClaim.maxClaimAmount (default 100,000 FARM). The backend parses each
+// GOLD unit as 1e18 FARM, so a request above this always reverts AmountOutOfBounds —
+// clamping the MAX button stops us from asking for a claim the contract will reject.
+const MAX_CLAIM_GOLD   = 100_000;
 
 const ERC20_ABI = [
   'function balanceOf(address account) external view returns (uint256)',
@@ -440,7 +444,7 @@ export function ClaimModal({ onClose }: Props) {
   useEffect(() => { fetchBalances(); }, [fetchBalances]);
   useEffect(() => { if (step === 'success') fetchBalances(); }, [step, fetchBalances]);
 
-  const maxClaimable = Math.floor(profile?.goldBalance ?? 0);
+  const maxClaimable = Math.min(Math.floor(profile?.goldBalance ?? 0), MAX_CLAIM_GOLD);
   const parsed   = parseInt(amount, 10) || 0;
   const hasBnb   = bnbBalance === null || bnbBalance >= MIN_BNB_FOR_GAS;
   const isBusy   = step === 'requesting_sig' || step === 'sending_tx' || step === 'confirming';
