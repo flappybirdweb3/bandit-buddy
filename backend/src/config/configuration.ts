@@ -86,6 +86,15 @@ export default () => ({
     minTrustScore: parseInt(process.env.MIN_TRUST_SCORE ?? '30', 10) || 30,
     initialPlots: 6,
     initialEnergy: 100,
+    // Starting GOLD for a brand-new account. users.gold_balance defaults to 0 in the
+    // schema, so THIS value is what actually funds a first-time player — without it they
+    // cannot afford the cheapest seed (120G) and the farm loop dead-ends immediately.
+    // Parsed without `|| 250` on purpose: STARTING_GOLD=0 is a legitimate config and must
+    // not be silently replaced by the fallback.
+    startingGold: (() => {
+      const parsed = Number(process.env.STARTING_GOLD ?? 250);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : 250;
+    })(),
     maxEnergy: 100,
     energyRegenPerHour: 15,    // 15/h → full in ~6.7h (was 10/h = 10h)
     stealEnergyCost: 10,

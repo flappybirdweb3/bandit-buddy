@@ -254,7 +254,18 @@ export class TelegramAuthGuard implements CanActivate {
   private async upsertTelegramUser(
     telegramUser: { id: number; username?: string; first_name?: string },
   ): Promise<{ user: User; isNew: boolean }> {
-    const username = telegramUser.username || telegramUser.first_name || null;
+    // `string | undefined`, NOT `| null`: the insert's value type is
+    // `string | (() => string) | undefined`, so passing `null` was a hard TS2322 that made
+    // `nest build` — and therefore `npm run test:e2e` — fail outright. A failing build is
+    // how the two gold symptoms below could be observed while this file looked correct:
+    // the process serving traffic was an older artefact.
+    const username = telegramUser.username || telegramUser.first_name || undefined;
+
+    // Starter resources come from configuration and are written in the SAME insert that
+    // creates the row. The schema default for users.gold_balance is 0, so any creation
+    // path that omits this column yields an account that cannot afford a single seed.
+    const startingGold   = this.config.get<number>('game.startingGold') ?? 250;
+    const startingEnergy = this.config.get<number>('game.initialEnergy') ?? 100;
 
     return this.dataSource.transaction(async (manager) => {
       const insert = await manager
@@ -264,8 +275,8 @@ export class TelegramAuthGuard implements CanActivate {
         .values({
           telegramId: telegramUser.id,
           username,
-          goldBalance: 250, // Starter gold — enough for 2 Turnips (120G each)
-          energy: 100,
+          goldBalance: startingGold,
+          energy: startingEnergy,
           trustScore: 50,
           nonce: 0,
         })
