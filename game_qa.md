@@ -1,13 +1,31 @@
-# 📋 BÁO CÁO QA — BANDIT BUDDY (Web2.5)
+# 🛡️ MASTER QA & E2E TESTING PLAN — BANDIT BUDDY (Web2.5)
 
-> **Trạng thái tài liệu:** Draft — toàn bộ test case dưới đây ở trạng thái **`Chưa chạy`**.
+> **Trạng thái tài liệu:** Draft — toàn bộ test case ở trạng thái **`Chưa chạy`**.
 > Không có PASS/FAIL nào được điền sẵn. Không có tỷ lệ % nào được tổng hợp.
+> **Nguồn hợp nhất:** `game_report.md` (kế hoạch E2E) + `game_qa.md` (ma trận chi tiết theo source).
+> Mọi giả định trái với source đã được **đính chính inline**, đánh dấu 🔧.
 
 ---
 
-## 0. Phạm vi, giả định & Nguồn tham chiếu
+## 1. Tổng quan kiến trúc & Sơ đồ luồng tin cậy (Trust Boundary)
 
-### 0.1 Artefact trong phạm vi (đã có trong sơ đồ dự án)
+### 1.1 Sơ đồ luồng tin cậy (Trust Boundary)
+
+```text
+┌──────────────┐   initData    ┌──────────────────┐   EIP-712 Sig   ┌────────────────┐
+│ Telegram Bot │ ────────────► │ NestJS Backend   │ ──────────────► │ Smart Contract │
+│  (Frontend)  │ ◄──────────── │ (DB Postgres)    │ ◄────────────── │  (BSC Testnet) │
+└──────────────┘   JWT/State   └──────────────────┘   Event Logs    └────────────────┘
+        │                              │                                    │
+        └─────────── On-chain tx ──────┴──────────── PancakeSwap ───────────┘
+```
+
+- **Backend (NestJS + TypeORM + PostgreSQL)** — nguồn sự thật cho state off-chain (GOLD, crop, quest, inventory...). Auth qua header `x-telegram-init-data`.
+- **Smart contract (Hardhat / Solidity ^0.8.24 / OpenZeppelin v5 / BSC)** — nguồn sự thật cho $FARM, NFT, marketplace, staking.
+- **Ranh giới tin cậy:** backend tin vào `x-telegram-init-data`; contract tin vào chữ ký ECDSA/EIP‑712 của backend; frontend không bao giờ được tin.
+- **ValidationPipe toàn cục:** `{ whitelist: true, forbidNonWhitelisted: true, transform: true }`.
+
+### 1.2 Artefact trong phạm vi (đã có trong sơ đồ dự án)
 
 | Layer | Artefact tham chiếu |
 |---|---|
@@ -17,19 +35,34 @@
 | Migrations | `1700000000027-AddTxHashToListings`, `1700000000030-AddProcessedOnchainTxs` |
 | Frontend hooks | `useClaimTokens`, `useMarketplaceTrade`, `useAutoWallet`, `usePlotActions` |
 
-### 0.2 Những điểm yêu cầu nhưng **KHÔNG hiện rõ** trong sơ đồ
+### 1.3 Đã đối chiếu source (resolved) & điểm còn cần xác minh
 
-Các mục sau **được yêu cầu nhắc tới** trong brief nhưng **chữ ký/hằng số không xuất hiện** trong sơ đồ hàm. Vì ràng buộc "không bịa", các case liên quan sẽ được đánh dấu `⚠ YÊU CẦU XÁC MINH CODE` — test sẽ viết theo hướng **quan sát hành vi thực tế của contract**, không giả định constant/ID cụ thể:
+Các hằng số / ngữ nghĩa từng bị coi là "chưa rõ" nay đã được xác minh trực tiếp từ source đã nạp:
 
-- `MAX_TAX_BPS` — không thấy constant trong `FarmToken.sol`. Ngưỡng cap có thể chưa tồn tại hoặc nằm trong `setTaxRates` (signature bị cắt `setTaxRates(`).
-- `UNSTAKE_DELAY` — hằng số không thấy trong `GuildStaking.sol`; chỉ có error `UnstakeLocked()` gợi ý delay tồn tại.
-- Soul Shard `id = 9999` — `BanditDogFusion.sol` có `ISoulShardNFT.burnShard`, `SoulShardMinted`, `ShardsRedeemed` nhưng **không** khai báo `uint256 SOUL_SHARD_ID` theo diagram.
-- `guardDogDefense`, `pityCounter` reset condition — `pityCounter` có ghi chú "resets on Tier ≥3 pull" trong diagram, nhưng biên cụ thể (`== 3` hay `>= 3`) cần đọc code.
-- `BanditMarket` `usedNonces[address][uint256]` là 1-1 ánh xạ; replay theo `(signer, nonce)`; nhưng không có `cancelOrder` semantics với expiry → cần xác nhận.
+| Mục | Kết quả đối chiếu source | Nguồn |
+|---|---|---|
+| `MAX_TAX_BPS` | **Tồn tại = 500 (5%)**; `setTaxRates` revert `"FarmToken: tax exceeds 5%"` | FarmToken.sol |
+| Ngưỡng tier | **`tier2Balance = 10_000e18`, `tier3Balance = 50_000e18`**; tier đọc từ `balanceOf(ví)` — **KHÔNG phải balance pool** | FarmToken.sol |
+| Tax suất | buy `300 / 200 / 100` bps · sell `500 / 300 / 150` bps | FarmToken.sol |
+| `UNSTAKE_DELAY` | **`= 7 days`** (constant) | GuildStaking.sol |
+| `unstake` khi paused | **Không** có `whenNotPaused` → vẫn rút được khi pause (đúng thiết kế "always-exit") | GuildStaking.sol |
+| `SOUL_SHARD_ID` | **`= 9999`** (unlimited supply); `SHARDS_PER_REDEEM = 100`, `MAX_REDEEM_PER_TX = 10` | BanditDogFusion.sol / GuardDogNFT.sol |
+| Pity | `_resolveTokenId`: `if (pityCounter[player] >= 10) return 3;` → override ở **pull thứ 11**; `pityCounter++` khi `tokenId < 3`, reset khi `tokenId >= 3` | BanditDogFusion.sol |
+| `cancelOrder` | `usedNonces[msg.sender][nonce] = true` + `OrderCancelled`; **không** có expiry riêng | BanditMarket.sol |
+| `GuardDogNFT.mint` / `burnShard` | Gate bằng `require(msg.sender == fusionContract, "Not fusion contract")` | GuardDogNFT.sol |
+| `FarmTokenClaim` | bounds `minClaimAmount = 1e18`, `maxClaimAmount = 100_000e18`; errors `AmountOutOfBounds`, `InsufficientPoolBalance`, `NonceAlreadyUsed`, `InvalidSignature`, `ZeroAddress`; hash = `keccak256(abi.encodePacked(user, amount, nonce))` + ERC‑191 prefix — **KHÔNG có EIP‑712 domain / chainId** | FarmTokenClaim.sol |
+| `TreasuryBuyBack` | Modifier order: `onlyOwner` → `nonReentrant` → `whenNotPaused`; `recoverERC20` chặn FARM bằng `require(token != farmToken, "Use burnHeldFarm")` | TreasuryBuyBack.sol |
 
-> **Nguyên tắc:** nơi nào giá trị chưa xác minh, test chỉ assert **hành vi mong đợi theo docs/vendor (event/error cụ thể)** — không hardcode số.
+**Các giả định của `game_report.md` đã bị source bác bỏ (đã sửa trong tài liệu này):**
 
-### 0.3 Công cụ
+- 🔧 **Tax tier theo `balanceOf(pair)`** với ngưỡng `500k / 2M` và tax `5 / 3 / 1%` → **SAI**. Model thật là holdings-based theo ví người dùng (10k / 50k). Xem §3.2 (A2) và §4 Suite 2.
+- 🔧 **AntiBot / `BotDetected` / `lastBuy` / TWAP / snapshot** → **không tồn tại** trong `FarmToken.sol`. Mọi test dựa trên các thành phần này đã bị gỡ/đánh dấu.
+- 🔧 **`NonceAlreadyUsed` trên `BanditMarket`** → sai tên; error thật là `NonceUsed()`.
+- 🔧 **`cross-chain` ngăn replay cho `FarmTokenClaim`** → **kết luận ngược**: hash không chứa `chainId`/`verifyingContract`, nên **cross-chain replay là khả thi** nếu `signerAddress` giống nhau ở 2 chain. Đây là **finding P0** (xem §4 TC‑04).
+
+> **Nguyên tắc:** không hardcode số ngoài source; không bịa PASS/FAIL.
+
+### 1.4 Công cụ
 
 - **Hardhat + ethers v6 + TypeScript + chai**: hợp đồng (so sánh `bigint` với `bigint`, dùng `parseEther`, `toBeBigInt`).
 - **Jest + class-validator + class-transformer**: DTO backend (đã có `action.dto.spec.ts`, `web3.dto.spec.ts`, `app.e2e-spec.ts`).
@@ -37,9 +70,61 @@ Các mục sau **được yêu cầu nhắc tới** trong brief nhưng **chữ k
 
 ---
 
-## (a) Ma trận Test Case
+## 2. Bề mặt tấn công chính & Ma trận rủi ro (Attack Surface & Risk Matrix)
 
-### A1. Smart Contract — Security (SEC)
+### 2.1 Attack Surface (hợp nhất từ `game_report.md`, đã đối chiếu source)
+
+| # | Contract / Module | Vector tấn công tiềm năng | Mức độ | Ghi chú đối chiếu source |
+|---|---|---|---|---|
+| A1 | `BanditMarket.sol` | Replay EIP‑712 signature (nonce reuse) | 🔴 Critical | `usedNonces[seller][nonce]`, error `NonceUsed()` |
+| A2 | `FarmTokenClaim.sol` | Replay claim signature (ECDSA nonce) | 🔴 Critical | `usedNonces[user][nonce]`, error `NonceAlreadyUsed` |
+| A3 | `BanditDogFusion.sol` | Commit–Reveal front-run / nonce replay | 🟠 High | `MIN_REVEAL_BLOCKS=2`, `REVEAL_WINDOW=256` |
+| A4 | `FarmToken.sol` | Tax bypass qua `isExcludedFromFee` | 🔴 Critical | Chỉ `onlyOwner` set được |
+| A5 | `FarmToken.sol` | Né tax bằng cách giữ vừa ngưỡng tier | 🟠 High | 🔧 Tier đọc từ `balanceOf(ví)` — **không** manipulation qua pool |
+| A6 | `TreasuryBuyBack.sol` | Reentrancy qua `swapExactETHForTokens` | 🟠 High | `onlyOwner` đứng trước `nonReentrant` (xem §4 TC‑01) |
+| A7 | `GuildStaking.sol` | Reentrancy khi `unstake` / `depositHarvestTax` | 🟠 High | `nonReentrant` + CEI |
+| A8 | `GuardDogNFT.sol` | Reentrancy qua ERC‑1155 `_update` hook | 🟡 Medium | `nonReentrant` trên `buyDog`; `_update` có `whenNotPaused` |
+| A9 | Backend `marketplace.service` | Race condition DB ↔ On-chain | 🔴 Critical | Cần xác minh locking (xem §4 SYNC‑RACE‑01) |
+| A10 | Backend `web3.service` | Double-claim do event listener trùng | 🔴 Critical | Cần xác minh unique `(tx_hash, log_index)` |
+
+### 2.2 Ma trận rủi ro hợp nhất (P0 / P1 / P2)
+
+| Ưu tiên | Nhóm rủi ro chính | Chi tiết |
+|---|---|---|
+| **P0** | Cap thuế & model tier; né tax tại biên tier; replay nonce mọi kênh (EIP‑712 / ECDSA / commit‑reveal); **cross‑chain replay của `FarmTokenClaim`**; access control hàm admin; idempotency `(tx_hash, log_index)`; race 2 buyer cùng listing; DTO whitelist & field thiếu validator | §6.3 P0 |
+| **P1** | Pity boundary; `burnOnPurchase`; `recoverERC20/BNB`; reorg/retry; `_splitFee` cap; lộ `eip712_sig` | §6.3 P1 |
+| **P2** | `SystemConfig` parse; `DexVolumeService.computeTierFromBalance` đồng bộ tier; `user_items.locked_quantity`; privacy `is_anonymous`; `friendlyError` frontend; load test | §6.3 P2 |
+
+---
+
+## 3. Ma trận Test Case toàn diện
+
+### 3.1 Suite E2E tổng hợp (từ `game_report.md`, đã đính chính 🔧)
+
+| ID | Suite | Tên Test Case | Loại | Ưu tiên |
+|---|---|---|---|---|
+| TC-01 | S1 | Reentrancy `TreasuryBuyBack.executeBuyBack` | Security | P0 |
+| TC-02 | S1 | Reentrancy `GuildStaking.unstake` | Security | P0 |
+| TC-03 | S1 | Replay EIP‑712 `BanditMarket.buyNFT` (nonce reuse) | Security | P0 |
+| TC-04 | S1 | Replay `FarmTokenClaim.claimTokens` + **cross‑chain replay** 🔧 | Security | P0 |
+| TC-05 | S1 | Access control `excludeFromFee` — user thường không tự whitelist | Security | P0 |
+| TC-06 | S1 | Tax áp dụng nhất quán khi chia nhỏ giao dịch (no dead zone) | Security | P1 |
+| TC-07 | S2 | 🔧 Tier holdings-based theo `balanceOf(wallet)` (**KHÔNG** theo pool) | Functional | P0 |
+| TC-08 | S2 | 🔧 Né tax tại biên tier (`tier2Balance−1`, `tier3Balance−1`) | Security | P0 |
+| TC-09 | S2 | Biên số cực trị & overflow khi balance = `type(uint128).max` | Robustness | P1 |
+| TC-10 | S3 | Kill switch — pause khi bank run (`EnforcedPause`) | Functional | P0 |
+| TC-11 | S3 | 🔧 **GỠ**: AntiBot/`BotDetected`/`lastBuy` không tồn tại → thay bằng test rate‑limit off‑chain (`AntiCheatService`) | — | — |
+| TC-12 | S3 | Kill switch không chặn user rút (`GuildStaking.unstake`, `Claim.emergencyWithdraw`) | Functional | P0 |
+| TC-13 | S4 | Race: list off-chain + buy on-chain cùng lúc | Concurrency | P0 |
+| TC-14 | S4 | Race: double-claim do event listener | Concurrency | P0 |
+| TC-15 | S4 | Race: DB commit fail sau on-chain success → retry queue | Resilience | P0 |
+| TC-16 | S4 | Idempotency `processed_onchain_txs` | Functional | P1 |
+
+> 🔧 **TC‑07/TC‑08 đã được viết lại:** bản gốc giả định tier theo `balanceOf(pair)` với ngưỡng 500k/2M và tax 5/3/1%, kèm yêu cầu TWAP. Source `FarmToken.sol` cho thấy model holdings-based (10k/50k, buy 3/2/1%, sell 5/3/1.5%), **không có TWAP**.
+
+### 3.2 Ma trận A1–A5 (chi tiết theo source)
+
+#### A1. Smart Contract — Security (SEC)
 
 | ID | Module | Loại | Ưu tiên |
 |---|---|---|---|
@@ -72,7 +157,7 @@ Các mục sau **được yêu cầu nhắc tới** trong brief nhưng **chữ k
 | SEC-PAUSE-05 | `GuardDogNFT` pause → `buyDog` revert; `mint` từ fusion vẫn chạy? | Kill-switch | P0 |
 | SEC-PAUSE-06 | `BanditMarket` pause → `buyNFT`/`buyOffchainItem`/`cancelOrder` behavior | Kill-switch | P1 |
 
-### A2. Smart Contract — Thuế FARM holdings-based (TAX)
+#### A2. Smart Contract — Thuế FARM holdings-based (TAX)
 
 | ID | Module | Loại | Ưu tiên |
 |---|---|---|---|
@@ -92,7 +177,7 @@ Các mục sau **được yêu cầu nhắc tới** trong brief nhưng **chữ k
 | TAX-SELLPATH-01 | `FarmToken` | Sell path: `to == pancakePair` | P1 |
 | TAX-PAUSE-01 | `FarmToken.pause` | `_update` bị chặn hoàn toàn | P0 |
 
-### A3. Kinh tế Token & Web2.5 Bridge (ECO)
+#### A3. Kinh tế Token & Web2.5 Bridge (ECO)
 
 | ID | Module | Loại | Ưu tiên |
 |---|---|---|---|
@@ -123,7 +208,7 @@ Các mục sau **được yêu cầu nhắc tới** trong brief nhưng **chữ k
 | ECO-BUY-01 | `TreasuryBuyBack.executeBuyBack` | `InsufficientBalance`, `SlippageTooHigh`, `BuyBackExecuted` | P0 |
 | ECO-BUY-02 | `TreasuryBuyBack.setSlippage` | `SlippageUpdated`, biên hợp lệ | P1 |
 
-### A4. Đồng bộ Off-chain ↔ On-chain (SYNC)
+#### A4. Đồng bộ Off-chain ↔ On-chain (SYNC)
 
 | ID | Module | Loại | Ưu tiên |
 |---|---|---|---|
@@ -137,7 +222,7 @@ Các mục sau **được yêu cầu nhắc tới** trong brief nhưng **chữ k
 | SYNC-DEX-01 | `DexVolumeService.computeTierFromBalance` | Đồng bộ tier với `FarmToken.getTierOf` (sanity) | P1 |
 | SYNC-CFG-01 | `SystemConfig` | Key/value parse — không để lại layout drift | P2 |
 
-### A5. Validation DTO / Mass-assignment (VAL)
+#### A5. Validation DTO / Mass-assignment (VAL)
 
 | ID | Module | Loại | Ưu tiên |
 |---|---|---|---|
@@ -156,9 +241,10 @@ Các mục sau **được yêu cầu nhắc tới** trong brief nhưng **chữ k
 
 ---
 
-## (b) Chi tiết Test Case
+## 4. Chi tiết kịch bản kiểm thử E2E & Smart Contract
 
 > Tất cả: **Trạng thái = `Chưa chạy`**, cột Kết quả **ĐỂ TRỐNG**.
+> §4.1–§4.4 = Suite E2E hợp nhất từ `game_report.md` (đã đính chính). Phần B1–B25 bên dưới = chi tiết theo module.
 
 ### B1. Reentrancy — `TreasuryBuyBack.executeBuyBack` [SEC-RNT-01]
 
@@ -491,7 +577,146 @@ Các mục sau **được yêu cầu nhắc tới** trong brief nhưng **chữ k
 
 ---
 
-## (c) Code mẫu Hardhat (TypeScript) & Jest
+### Suite 1 — Lỗ hổng Smart Contract (từ `game_report.md`, đã đính chính 🔧)
+
+#### 🎯 TC-01: Reentrancy trên `TreasuryBuyBack.executeBuyBack`
+
+**Mục tiêu:** `nonReentrant` chặn callback từ router giả.
+
+- **Tiền đề:** deploy `MockMaliciousRouter`; deploy `TreasuryBuyBack(farmToken, router, wbnb, owner)`; fund BNB cho contract.
+- **Bước:** `router.setTarget(buyback)`; gọi `executeBuyBack(1 ether, 0)`; router gọi lại `executeBuyBack` trong `swapExactETHForTokens`.
+- **Kỳ vọng (theo source):** modifier order là `onlyOwner → nonReentrant → whenNotPaused`. Router **không phải owner** ⇒ revert `OwnableUnauthorizedAccount`, tx gốc revert, **BNB không rời contract**, không emit `BuyBackExecuted`.
+- 🔧 **Đính chính:** bản gốc assert `ReentrancyGuardReentrantCall` — **không đạt được** khi router ≠ owner. Guard thực tế là lớp phòng thủ thứ hai (xem §5 C9).
+
+**Trạng thái:** `Chưa chạy` · **Kết quả:** —
+
+---
+
+#### 🎯 TC-02: Reentrancy trên `GuildStaking.unstake`
+
+**Mục tiêu:** `nonReentrant` + CEI đảm bảo `stakes[guildId][user].amount` và `guildTotalStaked` không bị trừ 2 lần.
+
+- **Bước:** user `stake(guildId, 100e18)` → `requestUnstake` → time travel qua `UNSTAKE_DELAY` (**7 days**) → `unstake` với token độc hại re-enter trong `transfer`.
+- **Kỳ vọng:** revert reentrancy guard; `amount` và `guildTotalStaked` nhất quán; `balanceOf(user)` tăng đúng 1 lần.
+
+**Trạng thái:** `Chưa chạy` · **Kết quả:** —
+
+---
+
+#### 🎯 TC-03: Replay EIP‑712 `BanditMarket.buyNFT`
+
+- **Bước:** seller ký `NFTOrder` (domain `EIP712("BanditMarket","2")`, `chainId`, `verifyingContract`) → `buyer1.buyNFT(order, sig)` → `buyer2.buyNFT(order, sig)`.
+- **Kỳ vọng:** lần 2 revert `NonceUsed()` 🔧 (bản gốc ghi `NonceAlreadyUsed` — sai tên). `usedNonces[seller][nonce] == true`.
+- **Edge case bổ sung:** `nonce = 0`; `nonce = type(uint256).max`; malleability (s cao/thấp) — `ECDSA.recover` của OZ v5 đã chặn malleability, cần test xác nhận.
+
+**Trạng thái:** `Chưa chạy` · **Kết quả:** —
+
+---
+
+#### 🎯 TC-04: Replay `FarmTokenClaim.claimTokens` + cross‑chain replay 🔴
+
+- **Kỳ vọng (hash parity):** `keccak256(abi.encodePacked(user, amount, nonce))` → ERC‑191 prefix. **Không có EIP‑712 domain, không có `chainId`, không có `verifyingContract`.**
+- **Phát hiện P0:** nếu `signerAddress` giống nhau trên 2 chain (testnet + mainnet cùng key), chữ ký `(user, amount, nonce)` hợp lệ trên **cả hai** chain ⇒ **cross‑chain replay**. Cần tách `chainId` vào message hash hoặc dùng nonce namespace theo chain.
+- 🔧 Bản gốc giả định domain separator ngăn cross-chain — **SAI**.
+
+**Trạng thái:** `Chưa chạy` · **Kết quả:** —
+
+---
+
+#### 🎯 TC-05: Access control `excludeFromFee`
+
+- User gọi `excludeFromFee(user, true)` → revert `OwnableUnauthorizedAccount`. Owner gọi → success; sau đó pair→user không bị trừ tax.
+
+**Trạng thái:** `Chưa chạy` · **Kết quả:** —
+
+---
+
+#### 🎯 TC-06: Tax consistency khi chia nhỏ giao dịch
+
+- **Bối cảnh (holdings-based):** tier đọc tại `balanceOf(user)` **trước** `super._update`. Chia nhỏ giao dịch **có thể đổi tier giữa các lần bán** (vì balance giảm dần) ⇒ tổng tax khác với 1 lần bán lớn.
+- **Kỳ vọng:** ghi nhận hành vi thực tế; không assert "tax bằng nhau". Nếu chênh lệch đáng kể → báo cáo như rủi ro kinh tế (không phải bug bảo mật).
+
+**Trạng thái:** `Chưa chạy` · **Kết quả:** —
+
+---
+
+### Suite 2 — Thuế FARM holdings-based (🔧 đã đính chính toàn bộ)
+
+#### 🎯 TC-07: Tier theo `balanceOf(wallet)`
+
+- Ngưỡng thật: `tier2Balance = 10_000e18`, `tier3Balance = 50_000e18`.
+- `getTierOf`: `< tier2Balance → 1`; `< tier3Balance → 2`; `>= tier3Balance → 3`.
+- Buy tax `3/2/1%` · Sell tax `5/3/1.5%` · Cap `MAX_TAX_BPS = 500`.
+
+| Số dư ví (FARM) | Tier | Buy | Sell |
+|---|---|---|---|
+| 0 – 9,999.999… | 1 | 3% | 5% |
+| 10,000 – 49,999.999… | 2 | 2% | 3% |
+| ≥ 50,000 | 3 | 1% | 1.5% |
+
+#### 🎯 TC-08: Né tax tại biên tier
+
+- Ví giữ `tier3Balance − 1 wei` → tier 2 (sell 3%). Sau khi bán xuống dưới `tier2Balance` → lần bán sau chịu tier 1 (5%).
+- **Kết luận:** "né tax" chỉ đúng theo nghĩa hợp lệ (giữ ≥ ngưỡng để được ưu đãi); **không có** khe hở kiểu manipulation pool.
+- Test biên chính xác: `tier2Balance − 1`, `tier2Balance`, `tier3Balance − 1`, `tier3Balance`.
+
+#### 🎯 TC-09: Biên cực trị
+
+- `setTierThresholds(type(uint256).max - 1, type(uint256).max)` → `getTierOf` vẫn trả 1; không overflow.
+- `setTaxRates` với giá trị > 500 → revert `"FarmToken: tax exceeds 5%"`.
+
+**Trạng thái:** `Chưa chạy` · **Kết quả:** —
+
+---
+
+### Suite 3 — Kill Switch & quyền rút quỹ
+
+#### 🎯 TC-10: Pause khi bank run
+
+- `FarmToken.pause()` → emit `EmergencyPause(owner)`; mọi `_update` revert `EnforcedPause`.
+- `FarmTokenClaim.pause()` → `claimTokens` revert `EnforcedPause`.
+- `BanditDogFusion.pause()` → `commit`/`reveal`/`tokenizeDog`/`redeemShards` revert `EnforcedPause`.
+- `GuardDogNFT.pause()` → `buyDog` revert `EnforcedPause`.
+- 🔧 Bản gốc nói "user đã có tx pending không bị ảnh hưởng (fairness)" — không kiểm chứng được on-chain; **gỡ** khỏi tiêu chí.
+
+#### 🎯 TC-11: 🔧 GỠ — AntiBot/Honeypot
+
+- `FarmToken.sol` **không có** `antiBot` modifier, `BotDetected` error, `lastBuy` mapping, hay TWAP. Bản gốc dựa trên các thành phần không tồn tại ⇒ **không thể test**.
+- **Chuyển hướng:** bot detection nằm ở **off-chain** — `AntiCheatService` (`trackSteal`, `checkHarvestTiming`). Test tương ứng nằm ở §5 C15.
+
+#### 🎯 TC-12: Pause không chặn rút quỹ
+
+- `GuildStaking.unstake` / `requestUnstake` **không** có `whenNotPaused` ⇒ user luôn rút được sau delay dù contract paused.
+- `FarmTokenClaim.emergencyWithdraw` **không** có `whenNotPaused` ⇒ owner luôn rút được.
+- **Kỳ vọng:** cả hai thành công khi paused. Đây là "always-exit pattern", cần document là thiết kế chủ ý.
+
+**Trạng thái:** `Chưa chạy` · **Kết quả:** —
+
+---
+
+### Suite 4 — Đồng bộ State Web2.5 (Race Condition)
+
+#### 🎯 TC-13: List off-chain + buy on-chain cùng lúc
+
+- **Kỳ vọng:** đúng 1 thao tác thắng; DB dùng conditional `UPDATE ... WHERE status='active'` (kiểm tra `affected === 1`) hoặc pessimistic lock; `MarketplaceListing.status` chuyển `active → filled` **đúng 1 lần**.
+
+#### 🎯 TC-14: Double-claim do event listener
+
+- Listener chạy 2 lần cùng `(tx_hash, log_index)` → lần 2 **no-op** nhờ unique constraint.
+
+#### 🎯 TC-15: DB commit fail sau on-chain success
+
+- **Kỳ vọng:** có retry queue hoặc reconciliation job; `tx_hash` được replay tới khi commit thành công.
+
+#### 🎯 TC-16: Idempotency `processed_onchain_txs`
+
+- `processTx({txHash, logIndex})` lần 1 → `processed: true`; lần 2 → `processed: false`.
+
+**Trạng thái:** `Chưa chạy` · **Kết quả:** —
+
+---
+
+## 5. Bộ code mẫu kỹ thuật (Hardhat TypeScript & NestJS Jest)
 
 ### C1. `test/TreasuryBuyBack.security.test.ts` — Reentrancy [SEC-RNT-01]
 
@@ -1042,11 +1267,455 @@ describe("GuildStaking — pause & unstake", () => {
 
 ---
 
-## (d) Rủi ro & Khuyến nghị
+### C9. Reentrancy E2E — `TreasuryBuyBack` (từ `game_report.md` §7.1, 🔧 sửa constructor)
+
+```solidity
+// contracts/src/test/MaliciousRouter.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface ITreasury {
+    function executeBuyBack(uint256 bnbAmount, uint256 minFarmOut) external;
+}
+
+contract MaliciousRouter {
+    ITreasury public target;
+    bool private attacking;
+
+    function setTarget(address _t) external { target = ITreasury(_t); }
+
+    function swapExactETHForTokens(
+        uint256, address[] calldata, address, uint256
+    ) external payable returns (uint256[] memory amounts) {
+        if (!attacking) {
+            attacking = true;
+            target.executeBuyBack(1, 0); // cố tình re-enter
+        }
+        amounts = new uint256[](1);
+        amounts[0] = 0;
+        return amounts;
+    }
+}
+```
+
+```ts
+// contracts/test/TreasuryBuyBack.security.test.ts
+import { ethers } from "hardhat";
+import { expect } from "chai";
+import { loadFixture } from "@nomicfoundation/hardhat-network-helpers";
+
+describe("TreasuryBuyBack — security", () => {
+  async function deployFixture() {
+    const [owner, wbnb] = await ethers.getSigners();
+
+    const FARM = await ethers.deployContract("MockERC20");
+    await FARM.waitForDeployment();
+
+    const Router = await ethers.deployContract("MaliciousRouter");
+    await Router.waitForDeployment();
+
+    // 🔧 Constructor thật: (_farmToken, _pancakeRouter, _wbnb, _owner)
+    const BB = await ethers.deployContract("TreasuryBuyBack", [
+      await FARM.getAddress(),
+      await Router.getAddress(),
+      wbnb.address,
+      owner.address,
+    ]);
+    await BB.waitForDeployment();
+
+    await Router.setTarget(await BB.getAddress());
+    await owner.sendTransaction({ to: await BB.getAddress(), value: ethers.parseEther("10") });
+
+    return { owner, FARM, Router, BB };
+  }
+
+  it("executeBuyBack không cho router re-enter [TC-01]", async () => {
+    const { owner, BB } = await loadFixture(deployFixture);
+    const before = await ethers.provider.getBalance(await BB.getAddress());
+
+    // Router ≠ owner ⇒ revert ở onlyOwner
+    await expect(BB.executeBuyBack(ethers.parseEther("1"), 0n))
+      .to.be.revertedWithCustomError(BB, "OwnableUnauthorizedAccount");
+
+    expect(await ethers.provider.getBalance(await BB.getAddress())).to.equal(before);
+  });
+
+  it("revert InsufficientBalance khi bnb vượt số dư [ECO-BUY-01]", async () => {
+    const { owner, BB } = await loadFixture(deployFixture);
+    await expect(BB.connect(owner).executeBuyBack(ethers.parseEther("1000000"), 0n))
+      .to.be.revertedWithCustomError(BB, "InsufficientBalance");
+  });
+});
+```
+
+---
+
+### C10. EIP‑712 Replay E2E — `BanditMarket` (từ `game_report.md` §7.2, 🔧 version domain = "2")
+
+```ts
+import { ethers } from "hardhat";
+import { expect } from "chai";
+import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
+
+describe("BanditMarket — EIP-712 Replay", () => {
+  async function deployFixture() {
+    const [owner, seller, buyerA, buyerB] = await ethers.getSigners();
+
+    const FARM = await ethers.deployContract("MockERC20");
+    await FARM.waitForDeployment();
+
+    // Constructor thật: (_farmToken, _treasury, _owner) — khớp arity bản gốc
+    const Market = await ethers.deployContract("BanditMarket", [
+      await FARM.getAddress(), owner.address, owner.address,
+    ]);
+    await Market.waitForDeployment();
+
+    const domain = {
+      name: "BanditMarket",
+      version: "2", // 🔧 EIP712("BanditMarket", "2")
+      chainId: (await ethers.provider.getNetwork()).chainId,
+      verifyingContract: await Market.getAddress(),
+    } as const;
+
+    return { owner, seller, buyerA, buyerB, Market, domain, FARM };
+  }
+
+  const ORDER_TYPES = {
+    NFTOrder: [
+      { name: "seller",      type: "address" },
+      { name: "nftContract", type: "address" },
+      { name: "tokenId",     type: "uint256" },
+      { name: "amount",      type: "uint256" },
+      { name: "priceFarm",   type: "uint256" },
+      { name: "nonce",       type: "uint256" },
+      { name: "deadline",    type: "uint256" },
+    ],
+  } as const;
+
+  it("cùng order không thể fill 2 lần → NonceUsed [TC-03]", async () => {
+    const { seller, buyerA, buyerB, Market, domain, FARM } = await loadFixture(deployFixture);
+
+    const deadline = BigInt(await time.latest()) + 3600n;
+    const order = {
+      seller: seller.address, nftContract: await Market.getAddress(),
+      tokenId: 1n, amount: 1n, priceFarm: ethers.parseEther("1"), nonce: 7n, deadline,
+    };
+    const sig = await seller.signTypedData(domain, ORDER_TYPES, order);
+
+    // ... setup: cấp NFT cho seller + setApprovalForAll, approve FARM cho buyer ...
+    // await Market.connect(buyerA).buyNFT(order, sig);
+
+    await expect(Market.connect(buyerB).buyNFT(order, sig))
+      .to.be.revertedWithCustomError(Market, "NonceUsed"); // 🔧 không phải NonceAlreadyUsed
+    void FARM;
+  });
+
+  it("deadline hết hạn → OrderExpired [SEC-EXPIRE-01]", async () => {
+    const { seller, buyerA, Market, domain } = await loadFixture(deployFixture);
+    const order = {
+      seller: seller.address, nftContract: await Market.getAddress(),
+      tokenId: 1n, amount: 1n, priceFarm: ethers.parseEther("1"),
+      nonce: 9n, deadline: BigInt(await time.latest()) - 1n,
+    };
+    const sig = await seller.signTypedData(domain, ORDER_TYPES, order);
+    await expect(Market.connect(buyerA).buyNFT(order, sig))
+      .to.be.revertedWithCustomError(Market, "OrderExpired");
+  });
+});
+```
+
+---
+
+### C11. Tax boundary E2E — holdings-based (từ `game_report.md` §7.3, 🔧 viết lại theo model thật)
+
+```ts
+import { ethers } from "hardhat";
+import { expect } from "chai";
+import { loadFixture } from "@nomicfoundation/hardhat-network-helpers";
+
+describe("FarmToken — holdings-based tier boundary", () => {
+  async function fixture() {
+    const [owner, alice, pair, treasury] = await ethers.getSigners();
+    const FARM = await ethers.deployContract("FarmToken", [owner.address]);
+    await FARM.waitForDeployment();
+    await FARM.connect(owner).setPancakePair(pair.address);
+    await FARM.connect(owner).setTreasuryBuybackPool(treasury.address);
+    await FARM.connect(owner).transfer(pair.address, ethers.parseEther("1000000"));
+    return { owner, alice, pair, treasury, FARM };
+  }
+
+  it("getTierOf theo balance VÍ — boundary tier2/tier3 [TC-07]", async () => {
+    const { owner, alice, FARM } = await loadFixture(fixture);
+    const t2 = await FARM.tier2Balance();
+    const t3 = await FARM.tier3Balance();
+
+    expect(await FARM.getTierOf(alice.address)).to.equal(1n);
+
+    await FARM.connect(owner).transfer(alice.address, t2 - 1n);
+    expect(await FARM.getTierOf(alice.address)).to.equal(1n);
+
+    await FARM.connect(owner).transfer(alice.address, 1n); // == t2
+    expect(await FARM.getTierOf(alice.address)).to.equal(2n);
+
+    await FARM.connect(owner).transfer(alice.address, t3 - t2);
+    expect(await FARM.getTierOf(alice.address)).to.equal(3n);
+  });
+
+  it("ví giữ ngay dưới ngưỡng tier3 bị tính sell tax tier 2 [TC-08]", async () => {
+    const { owner, alice, pair, treasury, FARM } = await loadFixture(fixture);
+    const t3 = await FARM.tier3Balance();
+    await FARM.connect(owner).transfer(alice.address, t3 - 1n); // tier 2
+
+    const amount = ethers.parseEther("1000");
+    const treasuryBefore = await FARM.balanceOf(treasury.address);
+    await FARM.connect(alice).transfer(pair.address, amount);
+
+    // tier 2 sell = 3% (300 bps)
+    expect((await FARM.balanceOf(treasury.address)) - treasuryBefore)
+      .to.equal((amount * 300n) / 10_000n);
+  });
+});
+```
+
+---
+
+### C12. Anti-cheat off-chain (thay thế TC-11 Honeypot — 🔧)
+
+> AntiBot/`BotDetected`/`lastBuy` **không tồn tại** on-chain. Detection nằm ở `AntiCheatService`.
+
+```ts
+// backend/test/anti-cheat.e2e-spec.ts
+import { Test } from "@nestjs/testing";
+import { AntiCheatService } from "../src/common/anti-cheat.service";
+import { RedisService } from "../src/common/redis.service";
+
+describe("AntiCheatService (E2E)", () => {
+  let service: AntiCheatService;
+  let redis: RedisService;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      providers: [AntiCheatService, RedisService],
+    }).compile();
+    service = moduleRef.get(AntiCheatService);
+    redis = moduleRef.get(RedisService);
+  });
+
+  it("phát hiện bot qua tần suất steal [TC-11]", async () => {
+    const userId = "bot-1";
+    for (let i = 0; i < 100; i++) await service.trackSteal(userId);
+    expect(await service.isSuspicious(userId)).toBe(true);
+  });
+
+  it("user thường không bị flag", async () => {
+    const userId = "user-1";
+    for (let i = 0; i < 5; i++) {
+      await service.trackSteal(userId);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(await service.isSuspicious(userId)).toBe(false);
+  });
+
+  it("flag harvest timing quá chính xác", async () => {
+    await service.checkHarvestTiming("sniper-1", new Date());
+    expect(await redis.get("harvest_suspicious:sniper-1")).toBeTruthy();
+  });
+});
+```
+
+---
+
+### C13. Marketplace race condition E2E (từ `game_report.md` §8.1)
+
+```ts
+// backend/test/marketplace.race.e2e-spec.ts
+import { Test } from "@nestjs/testing";
+import { INestApplication } from "@nestjs/common";
+import { DataSource } from "typeorm";
+import { AppModule } from "../src/app.module";
+import { MarketplaceService } from "../src/modules/marketplace/marketplace.service";
+import { Web3Service } from "../src/modules/web3/web3.service";
+
+describe("Marketplace — Race Condition (E2E)", () => {
+  let app: INestApplication;
+  let marketplace: MarketplaceService;
+  let web3: Web3Service;
+  let ds: DataSource;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    app = moduleRef.createNestApplication();
+    await app.init();
+    marketplace = app.get(MarketplaceService);
+    web3 = app.get(Web3Service);
+    ds = app.get(DataSource);
+  });
+
+  afterAll(async () => { await app.close(); });
+
+  it("list off-chain + buy on-chain cùng lúc → DB consistent [TC-13]", async () => {
+    await ds.query(
+      `INSERT INTO user_items (id, user_id, status) VALUES ($1, $2, 'OWNED')`,
+      ["item-1", "user-1"],
+    );
+
+    const results = await Promise.allSettled([
+      marketplace.listItem("user-1", "item-1", "100"),
+      web3.handleNFTOrderFilled({ txHash: "0xabc", logIndex: 0, seller: "user-1", itemId: "item-1", buyer: "user-2" }),
+    ]);
+
+    const succeeded = results.filter((r) => r.status === "fulfilled");
+    expect(succeeded.length).to.equal(1);
+
+    const [row] = await ds.query(`SELECT status FROM user_items WHERE id = $1`, ["item-1"]);
+    expect(["LISTED", "SOLD"]).to.include(row.status);
+  });
+
+  it("event listener chạy 2 lần → chỉ ghi 1 lần [TC-14]", async () => {
+    const event = { txHash: "0xdef", logIndex: 0, seller: "user-1", itemId: "item-2", buyer: "user-2" };
+    await web3.handleNFTOrderFilled(event);
+    await web3.handleNFTOrderFilled(event);
+
+    const rows = await ds.query(
+      `SELECT * FROM processed_onchain_txs WHERE tx_hash = $1 AND log_index = $2`,
+      [event.txHash, event.logIndex],
+    );
+    expect(rows.length).to.equal(1);
+  });
+
+  it("DB fail sau on-chain success → có retry queue [TC-15]", async () => {
+    const originalQuery = ds.query.bind(ds);
+    let callCount = 0;
+    jest.spyOn(ds, "query").mockImplementation(async (...args: any[]) => {
+      callCount++;
+      if (callCount === 1) throw new Error("Deadlock");
+      return originalQuery(...args);
+    });
+
+    await expect(
+      web3.handleNFTOrderFilled({ txHash: "0xfail", logIndex: 0, seller: "user-1", itemId: "item-3", buyer: "user-2" }),
+    ).rejects.toThrow("Deadlock");
+
+    const retries = await ds.query(`SELECT * FROM retry_queue WHERE tx_hash = $1`, ["0xfail"]);
+    expect(retries.length).to.be.greaterThan(0);
+  });
+});
+```
+
+---
+
+### C14. Web3 idempotency E2E (từ `game_report.md` §8.2)
+
+```ts
+// backend/test/web3.idempotency.e2e-spec.ts
+import { Test } from "@nestjs/testing";
+import { INestApplication } from "@nestjs/common";
+import { DataSource } from "typeorm";
+import { AppModule } from "../src/app.module";
+import { Web3Service } from "../src/modules/web3/web3.service";
+
+describe("Web3Service — Idempotency (E2E)", () => {
+  let app: INestApplication;
+  let web3: Web3Service;
+  let ds: DataSource;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    app = moduleRef.createNestApplication();
+    await app.init();
+    web3 = app.get(Web3Service);
+    ds = app.get(DataSource);
+  });
+
+  afterAll(async () => app.close());
+
+  it("processTx 2 lần cùng txHash → no-op lần 2 [TC-16]", async () => {
+    const tx = { txHash: "0xidem", logIndex: 0, userId: "u1", amount: "100" };
+
+    const r1 = await web3.processTx(tx);
+    const r2 = await web3.processTx(tx);
+
+    expect(r1.processed).to.equal(true);
+    expect(r2.processed).to.equal(false); // no-op
+
+    const rows = await ds.query(
+      `SELECT COUNT(*) FROM processed_onchain_txs WHERE tx_hash = $1`,
+      [tx.txHash],
+    );
+    expect(Number(rows[0].count)).to.equal(1);
+  });
+});
+```
+
+---
+
+### C15. AntiCheatService E2E (từ `game_report.md` §8.3)
+
+```ts
+// backend/test/anti-cheat.e2e-spec.ts
+import { Test } from "@nestjs/testing";
+import { AntiCheatService } from "../src/common/anti-cheat.service";
+import { RedisService } from "../src/common/redis.service";
+
+describe("AntiCheatService (E2E)", () => {
+  let service: AntiCheatService;
+  let redis: RedisService;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      providers: [AntiCheatService, RedisService],
+    }).compile();
+    service = moduleRef.get(AntiCheatService);
+    redis = moduleRef.get(RedisService);
+  });
+
+  it("phát hiện bot qua tần suất action", async () => {
+    const userId = "bot-1";
+    for (let i = 0; i < 100; i++) await service.trackSteal(userId);
+    expect(await service.isSuspicious(userId)).toBe(true);
+    void redis;
+  });
+
+  it("user thường không bị flag", async () => {
+    const userId = "user-1";
+    for (let i = 0; i < 5; i++) {
+      await service.trackSteal(userId);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(await service.isSuspicious(userId)).toBe(false);
+  });
+});
+```
+
+---
+
+## 6. Tiêu chí Pass/Fail, Rủi ro & Checklist triển khai Mainnet
+
+### 6.1 Tiêu chí Pass (từ `game_report.md` §9.1)
+
+| Loại | Tiêu chí |
+|---|---|
+| **Security** | 100% test case P0 phải PASS. Không có revert ngoài dự kiến. |
+| **Functional** | ≥ 95% test case PASS. |
+| **Concurrency** | Không có race condition, DB consistent sau 1000 lần chạy song song. |
+| **Coverage** | ≥ 90% line coverage cho contracts, ≥ 80% cho backend. |
+| **Gas** | Không tăng > 20% so với baseline. |
+
+### 6.2 Tiêu chí Fail / Blocker (từ `game_report.md` §9.2)
+
+- ❌ Bất kỳ test case P0 nào FAIL.
+- ❌ Phát hiện reentrancy có thể khai thác.
+- ❌ Replay signature thành công (bao gồm **cross‑chain replay** của `FarmTokenClaim`).
+- ❌ Né/giảm tax trái thiết kế trong cùng tx.
+- ❌ Race condition dẫn đến double-spend hoặc mất state.
+
+> ⚠️ **Không có khối "Pass/Fail tổng hợp"** trong tài liệu này. Bản `game_report.md` §9.3 từng ghi *"Suite 1: 15/16 PASS … TOTAL 25/26 PASS"* mà không có log chạy — đó là **số liệu bịa** và đã bị loại bỏ. Kết quả chỉ được điền sau khi thực sự chạy.
+
+### 6.3 Danh mục rủi ro hợp nhất (P0/P1/P2)
 
 > Phân loại theo mức độ ảnh hưởng; **không** gán tỷ lệ pass/fail.
 
-### P0 — Phải xử lý trước khi lên mainnet / trước khi public beta
+#### P0 — Phải xử lý trước khi lên mainnet / trước khi public beta
 
 | # | Rủi ro | Bằng chứng / điểm cần xác minh | Khuyến nghị |
 |---|---|---|---|
@@ -1063,7 +1732,7 @@ describe("GuildStaking — pause & unstake", () => {
 | P0-11 | **Kill-switch không thể rút quỹ user** (nếu chặn `unstake`, `emergencyWithdraw`) | `GuildStaking.unstake` (không pause-gate) và `FarmTokenClaim.emergencyWithdraw` (không pause-gate) — đúng pattern | Bổ sung test đảm bảo PAUSE **không** chặn hai hàm này. |
 | P0-12 | **`FarmTokenClaim.setSigner` rotе** có emit event đúng và sig cũ bị reject? | Sơ đồ có `SignerUpdated` | Test rotateSigner.ts end-to-end: đổi signer → ký lại → verify on-chain. |
 
-### P1 — Nên xử lý trước khi scale
+#### P1 — Nên xử lý trước khi scale
 
 | # | Rủi ro | Khuyến nghị |
 |---|---|---|
@@ -1079,7 +1748,7 @@ describe("GuildStaking — pause & unstake", () => {
 | P1-10 | **`BanditMarket._splitFee`** — cap bps (contract có `FeeTooHigh`) | Test `setFee > cap` → `FeeTooHigh`; math bigint cho `price` lẻ. |
 | P1-11 | **`MarketplaceListing.eip712_sig` lưu raw** — nếu lộ ra public API | Kiểm tra response API không trả `eip712_sig`. Test sync DTO output. |
 
-### P2 — Cải thiện / vệ sinh
+#### P2 — Cải thiện / vệ sinh
 
 | # | Rủi ro | Khuyến nghị |
 |---|---|---|
@@ -1094,12 +1763,28 @@ describe("GuildStaking — pause & unstake", () => {
 
 ---
 
-### Tổng kết trạng thái
+### 6.4 Checklist trước khi lên Mainnet (từ `game_report.md` Phụ lục B)
 
-- **Tổng số kịch bản liệt kê:** ~80 test case / ~30 test file dự kiến.
+- [ ] 100% test case P0 PASS.
+- [ ] Kết quả build/test contracts (`npx hardhat test`) & backend (`npm test`) đính kèm log thật.
+- [ ] Audit bên thứ 3 (CertiK / Hacken) — không có Critical/High.
+- [ ] Multisig cho `owner` (Gnosis Safe) trên **mọi** contract.
+- [ ] Timelock cho các hàm admin (`setTierThresholds`, `setTaxRates`, `setPancakePair`, `setTreasuryBuybackPool`, `setSigner`, `setFusionContract`, `setBackendSigner`, `setFee`).
+- [ ] Đưa `chainId` vào message hash của `FarmTokenClaim` (chống cross‑chain replay).
+- [ ] Xác minh unique composite `(tx_hash, log_index)` ở migration `1700000000030-AddProcessedOnchainTxs`.
+- [ ] Bổ sung validator cho `SyncNftDto.walletAddress` và `RepairDto.amount`.
+- [ ] Monitoring on-chain (Tenderly / Forta) + alert khi `pause()` được gọi.
+- [ ] Bug bounty program.
+
+**Công cụ đề xuất (từ `game_report.md` Phụ lục A):** Hardhat + `@nomicfoundation/hardhat-network-helpers` · Slither / Mythril (static analysis) · Echidna (fuzzing) · k6 / Artillery (load test — `load_test_barnbuddy.js`) · Testcontainers cho Postgres E2E.
+
+### 6.5 Tổng kết trạng thái tài liệu
+
+- **Tổng số kịch bản liệt kê:** ~100 test case (A1–A5 + B1–B25 + Suite TC‑01…TC‑16) / ~35 test file dự kiến.
 - **Trạng thái:** **`Chưa chạy`** — không có cột Kết quả nào được điền.
-- **Điều kiện tiên quyết để chạy:**
-  1. Xác minh các dấu **⚠** trong sơ đồ (`MAX_TAX_BPS`, `UNSTAKE_DELAY`, `SOUL_SHARD_ID`, constructor signatures của `TreasuryBuyBack`, `BanditMarket`, `GuardDogNFT`, `FarmTokenClaim`).
-  2. Xác minh validator của `SyncNftDto.walletAddress`, `RepairDto.amount`.
-  3. Xác minh unique constraint ở migration 30.
+- **Đã đối chiếu source:** `MAX_TAX_BPS`, `tier2Balance`/`tier3Balance`, `UNSTAKE_DELAY`, `SOUL_SHARD_ID`, pity boundary, modifier order, constructor signatures của toàn bộ 8 contract trong phạm vi — xem §1.3.
+- **Còn cần xác minh ngoài source đã nạp:**
+  1. Validator của `SyncNftDto.walletAddress`, `RepairDto.amount` (đã có `web3.dto.ts` / `action.dto.ts` trong phiên — kết luận: **thiếu validator**, xem §5 C6 và P0‑8).
+  2. Unique constraint `(tx_hash, log_index)` tại migration 30.
+  3. Locking strategy của `MarketplaceService.buy` (conditional update vs pessimistic lock).
 - **Không** có tỷ lệ PASS nào được ghi trong tài liệu này.
