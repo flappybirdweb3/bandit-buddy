@@ -439,8 +439,14 @@ export function App() {
   );
 }
 
-// Diagnostic error screen: auto-pings /api/ping (no auth) to separate
-// "server unreachable" from "auth header blocked by network/proxy"
+// Diagnostic error screen.
+//
+// It used to infer "network problem" from an unauthenticated /api/ping and then tell the
+// player to disable their Telegram proxy. That advice is wrong for the failure this screen
+// most often represents: /api/ping answers 200 while every AUTHENTICATED route is rejected,
+// because the session cookie is never stored for a cross-origin iframe. We now classify the
+// error the API client actually surfaced (it carries the HTTP status / server message) and
+// only blame the network when the network is genuinely the problem.
 function ConnectionErrorScreen({ errMsg, onRetry }: { errMsg: string; onRetry: () => void }) {
   const [pingResult, setPingResult] = useState<'testing' | 'ok' | 'fail'>('testing');
   const ran = useRef(false);
@@ -448,16 +454,36 @@ function ConnectionErrorScreen({ errMsg, onRetry }: { errMsg: string; onRetry: (
   useEffect(() => {
     if (ran.current) return;
     ran.current = true;
-    fetch('/api/ping')
+    fetch('/api/ping', { cache: 'no-store' })
       .then(r => r.ok ? setPingResult('ok') : setPingResult('fail'))
       .catch(() => setPingResult('fail'));
   }, []);
 
+  // api/client.ts throws `auth-401: …` when /auth/session is rejected, and `HTTP 401` (or
+  // the guard's own message) when a game route is rejected — match both shapes.
+  const isNetworkFailure =
+    /failed to fetch|network\s?error|load failed|network request failed|timed?\s?out|aborted/i.test(errMsg);
+  const isAuthFailure =
+    /auth[-_ ]?40[13]|\b40[13]\b|unauthorized|forbidden|init\s?data|session (expired|invalid|missing)/i.test(errMsg);
+  const isServerFault = /\b5\d\d\b|internal server error/i.test(errMsg);
+
+  const hardRelogin = () => {
+    // Best-effort only: an HttpOnly bb_sess is invisible to JS, and in the cross-origin
+    // iframe case there is no cookie to clear in the first place. The reload is what
+    // actually re-mints the session — /auth/session runs again on boot.
+    try { document.cookie = 'bb_sess=; Max-Age=0; path=/'; } catch { /* ignore */ }
+    window.location.reload();
+  };
+
   const hint =
     pingResult === 'testing' ? null :
-    pingResult === 'ok'
-      ? 'Server is reachable. Try disabling any VPN or proxy in Telegram settings.'
-      : 'Server unreachable. In Telegram → Settings → Proxy: disable proxy. Or switch to mobile data.';
+    pingResult === 'fail' || isNetworkFailure
+      ? 'Server unreachable. In Telegram → Settings → Proxy: disable proxy, or switch to mobile data.'
+      : isAuthFailure
+        ? 'The server is reachable, but this account could not start a game session. This is an auth problem, not a network one — tap “Re-login”.'
+        : isServerFault
+          ? 'The server returned an error while creating your session. Tap “Retry”, then “Re-login”.'
+          : 'The server is reachable but rejected the request. Tap “Re-login”.';
 
   return (
     <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 px-6"
@@ -468,6 +494,11 @@ function ConnectionErrorScreen({ errMsg, onRetry }: { errMsg: string; onRetry: (
         <p className="text-white/40 text-sm mt-1">Could not reach the farm server.</p>
         {hint && (
           <p className="text-yellow-300/80 text-xs mt-3 px-2 leading-relaxed">{hint}</p>
+        )}
+        {isAuthFailure && (
+          <p className="text-white/30 text-[10px] mt-2 px-2">
+            Diagnosed as an authentication failure — the Telegram account was not accepted.
+          </p>
         )}
         <p className="text-white/20 text-[10px] mt-2 font-mono break-all px-2">{errMsg}</p>
       </div>
@@ -480,11 +511,11 @@ function ConnectionErrorScreen({ errMsg, onRetry }: { errMsg: string; onRetry: (
           Retry
         </button>
         <button
-          onClick={() => window.location.reload()}
+          onClick={hardRelogin}
           className="px-6 py-3 rounded-2xl font-bold text-white/60 text-sm active:scale-95 transition-all"
           style={{ background: 'rgba(255,255,255,0.08)' }}
         >
-          Reload
+          Re-login
         </button>
       </div>
     </div>

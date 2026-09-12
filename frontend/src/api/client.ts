@@ -66,19 +66,36 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const hasInitData = !!WebApp.initData;
   const online = typeof navigator !== 'undefined' ? navigator.onLine : true;
 
-  // Ensure session cookie is set before any game request
+  // Ensure session cookie is set before any game request. Kept because it is cheaper for
+  // same-origin clients, but it is no longer the only auth path — see the header below.
   await ensureSession();
+
+  const initData = getInitData();
 
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, {
       ...options,
-      // credentials: 'same-origin' is the default — cookie is sent automatically
       headers: {
         // Only set Content-Type for requests that have a body (POST/PATCH/PUT).
         // GET requests with Content-Type can trigger CORS preflight and confuse proxies.
         ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        // No Authorization header — auth is via bb_sess cookie, transparent to proxies
+        // ALWAYS carry initData as a header, in addition to the bb_sess cookie.
+        //
+        // Why this is mandatory, not belt-and-braces: fetch defaults to
+        // credentials:'same-origin'. In Telegram Web and Telegram Desktop the Mini App is
+        // an iframe on a Telegram origin, so every call to /api/... is CROSS-origin — and
+        // for a cross-origin request in that credentials mode the browser neither sends
+        // nor STORES the Set-Cookie issued by /auth/session. The cookie flow silently
+        // no-ops there: /api/ping (unauthenticated) answers 200 while every authenticated
+        // route is 401, which renders as the "Connection error — server is reachable"
+        // screen. Same-origin mobile WebViews keep working, so the failure looks
+        // account- or device-specific when it is really origin-specific.
+        //
+        // TelegramAuthGuard validates this header on its own, so auth no longer depends on
+        // cookie storage at all. Cost: a CORS preflight on cross-origin calls —
+        // x-telegram-init-data is already in the backend's allowedHeaders list.
+        ...(initData ? { 'x-telegram-init-data': initData } : {}),
         ...options.headers,
       },
     });
