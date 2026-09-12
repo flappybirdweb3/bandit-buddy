@@ -123,8 +123,8 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
 
       this.wssContract.on('NFTOrderFilled', async (buyer, seller, nftContract, tokenId, _a, _p, _f, event) => {
         try {
-          const txHash = event.log?.transactionHash ?? '';
-          await this.handleNFTOrderFilled(txHash, seller, buyer, nftContract, Number(tokenId));
+          const { txHash, logIndex } = MarketplaceService.eventRef(event);
+          await this.handleNFTOrderFilled(txHash, logIndex, seller, buyer, nftContract, Number(tokenId));
         } catch (err: any) {
           this.logger.error(`NFTOrderFilled handler: ${err.message}`);
         }
@@ -132,8 +132,8 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
 
       this.wssContract.on('OffchainItemSold', async (buyer, seller, itemType, quantity, _p, _f, nonce, event) => {
         try {
-          const txHash = event.log?.transactionHash ?? '';
-          await this.handleOffchainItemSold(txHash, buyer, seller, itemType, Number(quantity), Number(nonce));
+          const { txHash, logIndex } = MarketplaceService.eventRef(event);
+          await this.handleOffchainItemSold(txHash, logIndex, buyer, seller, itemType, Number(quantity), Number(nonce));
         } catch (err: any) {
           this.logger.error(`OffchainItemSold handler: ${err.message}`);
         }
@@ -172,22 +172,46 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     }, this.wssReconnectDelay);
   }
 
+  /**
+   * Normalise a listener payload into the event's identity — (txHash, logIndex).
+   *
+   * ethers v6 hands the `EventLog` to the listener and nests nothing, but payload shapes
+   * differ (`logIndex` on some, `index` on a `Log`), so read all of them defensively.
+   * This is not cosmetic: an empty txHash collapses every event onto ('', logIndex) and
+   * silently dedupes unrelated logs that happen to share a log index across blocks.
+   */
+  private static eventRef(payload: any): { txHash: string; logIndex: number } {
+    const log = payload?.log ?? payload;
+    const txHash: string = log?.transactionHash ?? '';
+    const rawIndex = log?.logIndex ?? log?.index ?? 0;
+    return { txHash, logIndex: Number(rawIndex) };
+  }
+
   // ── NFTOrderFilled handler (Guard Dogs) ──────────────────────────────────────
 
   private async handleNFTOrderFilled(
-    txHash: string, _seller: string, _buyer: string, nftContract: string, tokenId: number,
+    txHash: string, logIndex: number, _seller: string, _buyer: string,
+    nftContract: string, tokenId: number,
   ): Promise<void> {
+    if (!txHash) throw new Error('NFTOrderFilled: missing transaction hash');
+
     await this.dataSource.transaction(async (manager) => {
-      // Atomic idempotency: INSERT ... ON CONFLICT DO NOTHING
-      // rowCount = 0 means already processed → skip
-      const result: any = await manager.query(
-        `INSERT INTO processed_onchain_txs (tx_hash, event_type)
-         VALUES ($1, 'NFTOrderFilled')
-         ON CONFLICT (tx_hash) DO NOTHING`,
-        [txHash],
+      // Atomic idempotency on the composite (tx_hash, log_index) — one transaction can
+      // emit several logs, so keying on tx_hash alone would drop every log after the
+      // first.
+      //
+      // RETURNING (not rowCount) is load-bearing: TypeORM's manager.query() resolves to
+      // pg's `rows` array and never exposes `rowCount`, so the previous
+      // `result.rowCount === 0` check was always false and this guard never fired.
+      const claimed: Array<{ tx_hash: string }> = await manager.query(
+        `INSERT INTO processed_onchain_txs (tx_hash, log_index, event_type)
+         VALUES ($1, $2, 'NFTOrderFilled')
+         ON CONFLICT (tx_hash, log_index) DO NOTHING
+         RETURNING tx_hash`,
+        [txHash, logIndex],
       );
-      if (result.rowCount === 0) {
-        this.logger.debug(`NFTOrderFilled already processed: ${txHash}`);
+      if (claimed.length === 0) {
+        this.logger.debug(`NFTOrderFilled already processed: ${txHash}#${logIndex}`);
         return;
       }
 
@@ -200,6 +224,9 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         .getOne();
 
       if (!listing) {
+        // Legitimate no-op: the contract already moved the NFT, so a trade with no DB
+        // listing (direct P2P sale) has nothing to book. Marking the event processed is
+        // correct — there is no delivery owed.
         this.logger.warn(`NFTOrderFilled: no active listing nftContract=${nftContract} tokenId=${tokenId}`);
         return;
       }
@@ -208,26 +235,30 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         status: 'filled', filledAt: new Date(), txHash,
       });
 
-      this.logger.log(`NFTOrderFilled: tokenId=${tokenId} tx=${txHash}`);
+      this.logger.log(`NFTOrderFilled: tokenId=${tokenId} tx=${txHash}#${logIndex}`);
     });
   }
 
   // ── OffchainItemSold handler (Crates / Kính Lúp / Master Key) ───────────────
 
   private async handleOffchainItemSold(
-    txHash: string, buyerWallet: string, sellerWallet: string,
+    txHash: string, logIndex: number, buyerWallet: string, sellerWallet: string,
     itemType: string, quantity: number, nonce: number,
   ): Promise<void> {
+    if (!txHash) throw new Error('OffchainItemSold: missing transaction hash');
+
     await this.dataSource.transaction(async (manager) => {
-      // Atomic idempotency
-      const result: any = await manager.query(
-        `INSERT INTO processed_onchain_txs (tx_hash, event_type)
-         VALUES ($1, 'OffchainItemSold')
-         ON CONFLICT (tx_hash) DO NOTHING`,
-        [txHash],
+      // Atomic idempotency on the composite (tx_hash, log_index) — see handleNFTOrderFilled
+      // for why RETURNING is required instead of rowCount.
+      const claimed: Array<{ tx_hash: string }> = await manager.query(
+        `INSERT INTO processed_onchain_txs (tx_hash, log_index, event_type)
+         VALUES ($1, $2, 'OffchainItemSold')
+         ON CONFLICT (tx_hash, log_index) DO NOTHING
+         RETURNING tx_hash`,
+        [txHash, logIndex],
       );
-      if (result.rowCount === 0) {
-        this.logger.debug(`OffchainItemSold already processed: ${txHash}`);
+      if (claimed.length === 0) {
+        this.logger.debug(`OffchainItemSold already processed: ${txHash}#${logIndex}`);
         return;
       }
 
@@ -236,18 +267,22 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         where: { walletAddress: sellerWallet.toLowerCase() },
       });
       if (!seller) {
-        this.logger.warn(`OffchainItemSold: seller wallet ${sellerWallet} not registered`);
-        return;
+        // Throw, not return. Off-chain items are delivered ONLY by this method, so
+        // returning would commit the processed_onchain_txs claim and permanently lose a
+        // purchase the buyer already paid FARM for. Throwing rolls the claim back and the
+        // next sweep re-delivers.
+        throw new Error(`OffchainItemSold: seller wallet ${sellerWallet} not registered`);
       }
       const buyer = await manager.findOne(User, {
         where: { walletAddress: buyerWallet.toLowerCase() },
       });
       if (!buyer) {
-        this.logger.warn(`OffchainItemSold: buyer wallet ${buyerWallet} not registered`);
-        return;
+        throw new Error(`OffchainItemSold: buyer wallet ${buyerWallet} not registered`);
       }
 
-      // Find active listing (lock row)
+      // Find active listing (lock row). buyListing() only hands out an order signature
+      // that references a persisted listing, so a missing listing here is a genuine
+      // anomaly — retry it rather than silently marking the event done.
       const listing = await manager
         .createQueryBuilder(MarketplaceListing, 'l')
         .where('l.seller_id = :sellerId AND l.item_type = :itemType AND l.status = :status', {
@@ -257,8 +292,9 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         .getOne();
 
       if (!listing) {
-        this.logger.warn(`OffchainItemSold: no active listing for ${itemType} from ${sellerWallet} nonce=${nonce}`);
-        return;
+        throw new Error(
+          `OffchainItemSold: no active listing for ${itemType} from ${sellerWallet} nonce=${nonce}`,
+        );
       }
 
       // Transfer item: deduct from seller, add to buyer
@@ -281,7 +317,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         status: 'filled', buyerId: buyer.id, filledAt: new Date(), txHash,
       });
 
-      this.logger.log(`OffchainItemSold: ${itemType} ×${quantity} → ${buyerWallet} tx=${txHash}`);
+      this.logger.log(`OffchainItemSold: ${itemType} ×${quantity} → ${buyerWallet} tx=${txHash}#${logIndex}`);
     });
   }
 
@@ -311,13 +347,15 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         for (const ev of nftEvents) {
           if (!('args' in ev)) continue;
           const { buyer, seller, nftContract, tokenId } = (ev as ethers.EventLog).args;
-          await this.handleNFTOrderFilled(ev.transactionHash, seller, buyer, nftContract, Number(tokenId));
+          const { txHash, logIndex } = MarketplaceService.eventRef(ev);
+          await this.handleNFTOrderFilled(txHash, logIndex, seller, buyer, nftContract, Number(tokenId));
         }
 
         for (const ev of offchainEvents) {
           if (!('args' in ev)) continue;
           const { buyer, seller, itemType, quantity, nonce } = (ev as ethers.EventLog).args;
-          await this.handleOffchainItemSold(ev.transactionHash, buyer, seller, itemType, Number(quantity), Number(nonce));
+          const { txHash, logIndex } = MarketplaceService.eventRef(ev);
+          await this.handleOffchainItemSold(txHash, logIndex, buyer, seller, itemType, Number(quantity), Number(nonce));
         }
 
         // Persist progress after each batch so a mid-scan crash resumes correctly
