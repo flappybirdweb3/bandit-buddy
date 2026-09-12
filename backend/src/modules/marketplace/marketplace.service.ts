@@ -513,12 +513,22 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     // undefined metadata entry and throws "Cannot read properties of undefined (reading
     // 'databaseName')" — this 500'd every listings request. `deadline` only worked by
     // coincidence (property and column share a name); `price` and `createdAt` did not.
-    const sortCol: Record<string, 'priceFarm' | 'createdAt' | 'deadline'> = {
+    //
+    // Typed over the DTO's own union instead of `Record<string, …>`: adding a new sort
+    // option to GetListingsQueryDto now fails compilation until it is mapped here, rather
+    // than silently falling back to createdAt at runtime. The `?? 'createdAt'` stays as a
+    // runtime guard for callers that bypass validation (internal callers passing a plain
+    // object), because an unmatched key would otherwise interpolate the literal string
+    // "l.undefined" into ORDER BY — the same crash this block exists to prevent.
+    const SORT_COLUMNS: Record<
+      NonNullable<GetListingsQueryDto['sortBy']>,
+      'priceFarm' | 'createdAt' | 'deadline'
+    > = {
       price:     'priceFarm',
       createdAt: 'createdAt',
       deadline:  'deadline',
     };
-    qb.orderBy(`l.${sortCol[sortBy] ?? 'createdAt'}`, order);
+    qb.orderBy(`l.${SORT_COLUMNS[sortBy] ?? 'createdAt'}`, order);
 
     // A public browse endpoint must never 500. The two operational cases that used to
     // surface as an unhandled exception are: the table not yet existing on a fresh
@@ -529,7 +539,19 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     let listings: MarketplaceListing[];
     try {
       total = await qb.getCount();
-      listings = await qb.take(limit).skip(offset).getMany();
+
+      // limit/offset (plain SQL LIMIT/OFFSET) rather than take/skip.
+      //
+      // take/skip exists to DEDUPLICATE parent rows when a to-many join multiplies them,
+      // and TypeORM implements it as the two-phase DISTINCT query that re-resolves every
+      // ORDER BY key against the selected aliases — the exact path
+      // (createOrderByCombinedWithSelectExpression) that threw "Cannot read properties of
+      // undefined (reading 'databaseName')". The only join here is `l.seller`, a
+      // ManyToOne, so a listing can never be duplicated: the dedup pass buys nothing and
+      // plain LIMIT/OFFSET never enters that code path at all. If a OneToMany join is ever
+      // added to this query, switch back to take/skip AND keep the ORDER BY keys as entity
+      // property names.
+      listings = await qb.limit(limit).offset(offset).getMany();
     } catch (err) {
       // Logged loudly on purpose: an empty marketplace and a broken query look identical
       // to the client, so this line is the only way to tell them apart in production.
