@@ -112,11 +112,38 @@ export class FarmService {
     await this.plotRepo.save(plots as FarmPlot[]);
   }
 
+  getActiveSeasonalEvent(): string {
+    const envOverride = this.config.get<string>('seasonal.event') ?? 'none';
+    if (envOverride !== 'none') return envOverride;
+    // Auto-detect by calendar date
+    const now = new Date();
+    const m = now.getUTCMonth() + 1; // 1-12
+    const d = now.getUTCDate();
+    if ((m === 10 && d >= 15) || (m === 10 && d <= 31)) return 'halloween';
+    if ((m === 12 && d >= 20) || (m === 1 && d <= 1))   return 'christmas';
+    if ((m === 1 && d >= 28) || (m === 2 && d <= 7))    return 'lunar';
+    if (m === 7 && d <= 15)                               return 'summer';
+    return 'none';
+  }
+
   async getSeeds(): Promise<SeedConfig[]> {
-    const activeEvent = this.config.get<string>('seasonal.event') ?? 'none';
+    const activeEvent = this.getActiveSeasonalEvent();
     const seeds = await this.seedRepo.find({ order: { levelRequired: 'ASC' } });
     // Filter: show regular seeds + seeds matching the active seasonal event
     return seeds.filter(s => !s.isSeasonal || s.seasonalTag === activeEvent);
+  }
+
+  getSeasonalEventInfo(): { event: string; endsAt: string | null } {
+    const event = this.getActiveSeasonalEvent();
+    const now = new Date();
+    const y = now.getUTCFullYear();
+    const endsAtMap: Record<string, Date> = {
+      halloween: new Date(`${y}-10-31T23:59:59Z`),
+      christmas: new Date(`${y + (now.getUTCMonth() >= 11 ? 1 : 0)}-01-01T23:59:59Z`),
+      lunar:     new Date(`${y}-02-07T23:59:59Z`),
+      summer:    new Date(`${y}-07-15T23:59:59Z`),
+    };
+    return { event, endsAt: endsAtMap[event]?.toISOString() ?? null };
   }
 
   async buyPlot(userId: string) {

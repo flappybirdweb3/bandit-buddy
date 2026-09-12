@@ -1,6 +1,6 @@
 import {
   Injectable, CanActivate, ExecutionContext,
-  UnauthorizedException,
+  UnauthorizedException, Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
@@ -9,15 +9,18 @@ import * as crypto from 'crypto';
 import { User } from '../../modules/user/entities/user.entity';
 import { FarmPlot } from '../../modules/farm/entities/farm-plot.entity';
 import { NotificationService } from '../../modules/notification/notification.service';
+import { AuthService } from '../../modules/auth/auth.service';
 
 @Injectable()
 export class TelegramAuthGuard implements CanActivate {
+  private readonly logger = new Logger(TelegramAuthGuard.name);
   private readonly userRepo: Repository<User>;
   private readonly plotRepo: Repository<FarmPlot>;
 
   constructor(
     private readonly config: ConfigService,
     private readonly notificationService: NotificationService,
+    private readonly authService: AuthService,
     @InjectDataSource()
     dataSource: DataSource,
   ) {
@@ -27,18 +30,66 @@ export class TelegramAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
-    const initData = request.headers['x-telegram-init-data'];
+
+    // Primary: bb_sess cookie — set by GET/POST /auth/session.
+    // Cookie is sent automatically by the browser for same-origin requests,
+    // requires NO custom headers, and passes through any proxy transparently.
+    const rawCookie: string = request.headers['cookie'] ?? '';
+    const cookieToken = rawCookie.split('; ')
+      .find((c: string) => c.startsWith('bb_sess='))
+      ?.slice('bb_sess='.length);
+    if (cookieToken) {
+      const user = await this.authService.resolveBearer(cookieToken);
+      if (user) { request.user = user; return true; }
+      // Cookie is stale — fall through to initData validation
+    }
+
+    // Secondary: Authorization: Bearer <session-uuid> (legacy header-based flow)
+    const authHeader: string = request.headers['authorization'] ?? '';
+    if (authHeader.startsWith('Bearer ')) {
+      const token = authHeader.slice(7);
+      const user = await this.authService.resolveBearer(token);
+      if (!user) throw new UnauthorizedException('Session expired — please reload');
+      request.user = user;
+      return true;
+    }
+
+    // Legacy fallbacks for clients that still send initData directly in headers
+    const b64Header = request.headers['x-tg-init'] as string | undefined;
+    let initData: string;
+    if (b64Header) {
+      try {
+        initData = Buffer.from(b64Header, 'base64').toString('utf8');
+      } catch { initData = ''; }
+    } else {
+      initData = authHeader.startsWith('tg ') ? authHeader.slice(3)
+        : (request.headers['x-telegram-init-data'] as string ?? '');
+    }
 
     if (!initData) throw new UnauthorizedException('Missing Telegram initData');
 
     const { telegramUser, startParam } = this.validateInitData(initData);
-    if (!telegramUser) throw new UnauthorizedException('Invalid Telegram initData signature');
+    if (!telegramUser) {
+      this.logger.warn(`Auth failed: invalid signature. initData prefix: ${String(initData).slice(0, 80)}`);
+      throw new UnauthorizedException('Invalid Telegram initData signature');
+    }
 
     let user = await this.userRepo.findOne({ where: { telegramId: telegramUser.id } });
     const isNew = !user;
 
     if (!user) {
-      user = await this.registerNewUser(telegramUser);
+      // Use upsert to handle race condition when two requests arrive simultaneously for the same new user.
+      // Both getProfile and getMyFarm fire in parallel on first load — without upsert, both try INSERT → unique constraint on telegramId.
+      try {
+        user = await this.registerNewUser(telegramUser);
+      } catch (err: any) {
+        // Handle unique constraint violation from concurrent first-login requests
+        const isDuplicate = err?.code === '23505' || String(err?.message).includes('duplicate key');
+        if (isDuplicate) {
+          user = await this.userRepo.findOne({ where: { telegramId: telegramUser.id } });
+        }
+        if (!user) throw err;
+      }
     }
 
     // Apply referral bonus on first login if came via invite link
