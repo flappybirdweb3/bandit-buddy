@@ -17,19 +17,60 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import * as request from 'supertest';
+import * as crypto from 'crypto';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
 import { DataSource } from 'typeorm';
 
-// ── Dev auth header (same logic as client.ts dev mode) ────────────────────────
+// ── Auth header ───────────────────────────────────────────────────────────────
+//
+// TelegramAuthGuard accepts x-telegram-init-data directly, but it only skips HMAC
+// validation when no bot token is configured:
+//
+//   const isDev = !botToken || botToken === 'your_telegram_bot_token_here';
+//
+// TELEGRAM_BOT_TOKEN IS loaded from ../.env in this environment, so the guard always ran
+// a real HMAC check and rejected the old literal `hash=devhash` — every authenticated
+// request returned 401 while the suite still "ran". Two tests even passed vacuously by
+// comparing two identical 401 bodies.
+//
+// So sign the payload exactly as the guard verifies it. The guard rebuilds the
+// data-check-string from URLSearchParams.entries() — i.e. the URL-DECODED values —
+// after dropping `hash`, sorted by key, joined with "\n", then HMAC-SHA256 with the
+// key derived from the literal "WebAppData".
+
+function signInitData(fields: Record<string, string>, botToken: string): string {
+  const params = new URLSearchParams(fields);
+  const dataCheckString = Array.from(params.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+  return crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+}
 
 function makeInitData(telegramId: number, username: string): string {
   const mockUser = JSON.stringify({ id: telegramId, first_name: 'Test', username });
-  return `user=${encodeURIComponent(mockUser)}&hash=devhash`;
+  // Read at call time. app.module.ts's ConfigModule.forRoot() runs during this file's
+  // import, so dotenv has already populated process.env by the time this executes.
+  const botToken = process.env.TELEGRAM_BOT_TOKEN ?? '';
+
+  if (!botToken || botToken === 'your_telegram_bot_token_here') {
+    // Same condition as the guard's dev bypass — keep working without a token.
+    return `user=${encodeURIComponent(mockUser)}&hash=devhash`;
+  }
+
+  return `user=${encodeURIComponent(mockUser)}&hash=${signInitData({ user: mockUser }, botToken)}`;
 }
 
-const DEV_USER_ID  = 700_000_001;
-const DEV_USER2_ID = 700_000_002;
+// Fresh IDs per run. farm_plots references users WITHOUT ON DELETE CASCADE, so afterAll's
+// `DELETE FROM users` trips a FK violation that its .catch(() => {}) swallows — a fixed
+// telegram_id therefore inherited the previous run's spent GOLD and planted plot 0, making
+// the suite pass or fail by run order rather than by code correctness.
+const RUN_ID = Math.floor(Math.random() * 1_000_000);
+const DEV_USER_ID  = 700_000_000 + RUN_ID;
+const DEV_USER2_ID = 701_000_000 + RUN_ID;
 const DEV_HEADERS  = { 'x-telegram-init-data': makeInitData(DEV_USER_ID, 'test_user_e2e') };
 const DEV_HEADERS2 = { 'x-telegram-init-data': makeInitData(DEV_USER2_ID, 'test_victim_e2e') };
 
@@ -96,6 +137,11 @@ describe('BanditBuddy E2E', () => {
         request(app.getHttpServer()).get('/api/user/profile').set(DEV_HEADERS),
         request(app.getHttpServer()).get('/api/user/profile').set(DEV_HEADERS),
       ]);
+      // Without the status assertions this passed throughout the 401 outage: two identical
+      // error bodies compare equal, so `r1.body.id === r2.body.id` was undefined === undefined.
+      expect(r1.status).toBe(200);
+      expect(r2.status).toBe(200);
+      expect(r1.body.id).toBeTruthy();
       expect(r1.body.id).toBe(r2.body.id);
     });
   });
