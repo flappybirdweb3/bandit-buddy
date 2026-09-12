@@ -101,12 +101,13 @@ export class UserService {
     const newStreak = isConsecutive ? user.dailyStreak + 1 : 1;
     const cycleDay   = ((newStreak - 1) % 7);          // 0-6, repeats every 7 days
     const goldReward = this.DAILY_REWARDS[cycleDay];
-    const energyRestore = cycleDay === 6 ? this.MAX_ENERGY : this.DAILY_ENERGY_RESTORE;
+    const userMaxEnergy = user.maxEnergy ?? this.MAX_ENERGY;
+    const energyRestore = cycleDay === 6 ? userMaxEnergy : this.DAILY_ENERGY_RESTORE;
     const nextStreakReward = this.DAILY_REWARDS[newStreak % 7];
 
     await this.userRepo.update(userId, {
       goldBalance: () => `"gold_balance" + ${goldReward}`,
-      energy: () => `LEAST(${this.MAX_ENERGY}, "energy" + ${energyRestore})`,
+      energy: () => `LEAST(${userMaxEnergy}, "energy" + ${energyRestore})`,
       trustScore: () => `LEAST(200, "trust_score" + 2)`,
       lastDailyClaim: new Date(),
       lastEnergyUpdate: new Date(),
