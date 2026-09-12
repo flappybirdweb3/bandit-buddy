@@ -15,9 +15,10 @@
  */
 
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import * as request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/app.setup';
 import { DataSource } from 'typeorm';
 
 // ── Dev auth header (same logic as client.ts dev mode) ────────────────────────
@@ -44,7 +45,16 @@ describe('BanditBuddy E2E', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+
+    // MUST run before init(). Test.createTestingModule() only builds the DI container — it
+    // never executes main.ts's bootstrap(), so without this the app is mounted with NO
+    // global prefix: routes live at /farm/seeds, /user/profile, … while every request in
+    // this suite targets /api/..., producing a blanket 404 across every module.
+    //
+    // It also installs the REAL ValidationPipe. The inline pipe this replaced omitted
+    // forbidNonWhitelisted, so every 400-assertion below was weaker than production.
+    configureApp(app);
+
     await app.init();
 
     db = app.get(DataSource);
@@ -102,8 +112,12 @@ describe('BanditBuddy E2E', () => {
         .set(DEV_HEADERS)
         .expect(200);
 
+      // /farm/my, NOT /farm/:userId. Only the 'my' handler calls ensureInitialPlots();
+      // /farm/:userId is a pure read, so for a brand-new user it returns plots: [] and
+      // plotId stays undefined — which cascades into plant/harvest/steal failing with
+      // "Plot not found or not yours".
       const farmRes = await request(app.getHttpServer())
-        .get(`/api/farm/${profileRes.body.id}`)
+        .get('/api/farm/my')
         .set(DEV_HEADERS)
         .expect(200);
 
@@ -182,8 +196,9 @@ describe('BanditBuddy E2E', () => {
         .set(DEV_HEADERS2);
       seedId = seedsRes.body[0].id;
 
+      // Victim reads their OWN farm — must go through /farm/my so plots are created.
       const farmRes = await request(app.getHttpServer())
-        .get(`/api/farm/${victimId}`)
+        .get('/api/farm/my')
         .set(DEV_HEADERS2);
       victimPlotId = farmRes.body.plots[0]?.id;
 
@@ -220,9 +235,10 @@ describe('BanditBuddy E2E', () => {
       const myId = profileRes.body.id;
 
       const farmRes = await request(app.getHttpServer())
-        .get(`/api/farm/${myId}`)
+        .get('/api/farm/my')
         .set(DEV_HEADERS);
       const myPlotId = farmRes.body.plots[0]?.id;
+      void myId;
 
       await request(app.getHttpServer())
         .post('/api/action/steal')
