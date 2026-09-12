@@ -102,12 +102,50 @@ describe('BanditBuddy E2E', () => {
   });
 
   afterAll(async () => {
-    // Clean up test users
-    await db.query(
-      `DELETE FROM users WHERE telegram_id IN ($1, $2)`,
-      [DEV_USER_ID, DEV_USER2_ID],
-    ).catch(() => {});
-    await app.close();
+    // Tear down in dependency order, then close the app.
+    //
+    // `users` is referenced WITHOUT ON DELETE CASCADE by steal_logs, farm_plots,
+    // user_items, user_daily_quests and user_notifications, so deleting users first
+    // raises 23503 (observed: `steal_logs_victim_id_fkey`). The previous code swallowed
+    // that with `.catch(() => {})`, so every run leaked two accounts plus their plots,
+    // crops, steal logs, quests and notifications. Randomised telegram ids hid it; an
+    // assertion that counts rows would not.
+    //
+    // steal_logs must precede farm_plots: it holds a plot_id FK as well as the two user FKs.
+    try {
+      const userFilter = `(SELECT id FROM users WHERE telegram_id IN ($1, $2))`;
+      await db.query(
+        `DELETE FROM steal_logs WHERE thief_id IN ${userFilter} OR victim_id IN ${userFilter}`,
+        [DEV_USER_ID, DEV_USER2_ID],
+      );
+      await db.query(
+        `DELETE FROM user_notifications WHERE user_id IN ${userFilter}`,
+        [DEV_USER_ID, DEV_USER2_ID],
+      );
+      await db.query(
+        `DELETE FROM user_daily_quests WHERE user_id IN ${userFilter}`,
+        [DEV_USER_ID, DEV_USER2_ID],
+      );
+      await db.query(
+        `DELETE FROM user_items WHERE user_id IN ${userFilter}`,
+        [DEV_USER_ID, DEV_USER2_ID],
+      );
+      await db.query(
+        `DELETE FROM farm_plots WHERE user_id IN ${userFilter}`,
+        [DEV_USER_ID, DEV_USER2_ID],
+      );
+      await db.query(
+        `DELETE FROM users WHERE telegram_id IN ($1, $2)`,
+        [DEV_USER_ID, DEV_USER2_ID],
+      );
+    } catch (err) {
+      // Loud but not fatal: teardown should never turn a green suite red, yet a silent
+      // swallow is exactly what hid this bug. If this fires, a user-referencing table
+      // was added without being joined to the list above.
+      console.error('[e2e] user teardown failed:', err);
+    } finally {
+      await app.close();
+    }
   });
 
   // ── Scenario 1: Auth ─────────────────────────────────────────────────────────

@@ -90,14 +90,8 @@ export class Web3Service {
       );
     }
 
-    const killActive = await this.dexOracle.isKillSwitchActive();
-    if (killActive) {
-      const reason = await this.dexOracle.getKillSwitchReason();
-      throw new ServiceUnavailableException(
-        reason ?? 'Claiming paused due to high market volatility. Try again later.',
-      );
-    }
-
+    // Cheap, local, specific checks first — they must answer before any infrastructure
+    // call, so a remote outage cannot mask a genuine 400.
     if (!user.walletAddress) {
       throw new BadRequestException('No wallet address linked. Please link your BSC wallet first.');
     }
@@ -105,6 +99,32 @@ export class Web3Service {
     if (Number(user.goldBalance) < amountToClaim) {
       throw new BadRequestException(
         `Insufficient GOLD. Have ${user.goldBalance}, need ${amountToClaim}`,
+      );
+    }
+
+    // Kill-switch check is FAIL-OPEN, deliberately.
+    //
+    // It is an operator safety lever for market volatility, NOT the authorization gate —
+    // that is trustScore + wallet + balance above. When Redis is unreachable (outage, auth
+    // failure, network blip) blocking here would take down GOLD→FARM conversion for every
+    // player because of an unrelated dependency. The loud ERROR surfaces the degraded state
+    // for ops, and the owner retains pause() as the hard stop.
+    //
+    // If the requirement is instead fail-CLOSED, the fix belongs in DexOracleService — it
+    // should serve the last known state from a local cache rather than propagate the
+    // connection error — not here.
+    let killActive = false;
+    try {
+      killActive = await this.dexOracle.isKillSwitchActive();
+    } catch (err) {
+      this.logger.error(
+        `Kill-switch check unavailable, proceeding without it: ${(err as Error).message}`,
+      );
+    }
+    if (killActive) {
+      const reason = await this.dexOracle.getKillSwitchReason().catch(() => null);
+      throw new ServiceUnavailableException(
+        reason ?? 'Claiming paused due to high market volatility. Try again later.',
       );
     }
 

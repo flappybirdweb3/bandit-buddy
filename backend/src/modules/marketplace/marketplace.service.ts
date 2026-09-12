@@ -493,13 +493,21 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     if (minPrice != null) qb.andWhere('l.price_farm >= :minPrice', { minPrice });
     if (maxPrice != null) qb.andWhere('l.price_farm <= :maxPrice', { maxPrice });
 
-    // Sort mapping
-    const sortCol: Record<string, string> = {
-      price:     'l.price_farm',
-      createdAt: 'l.created_at',
-      deadline:  'l.deadline',
+    // Sort mapping — ENTITY PROPERTY names, never DB column names.
+    //
+    // `where('l.asset_type = :x')` is emitted as raw SQL so a column name works there.
+    // orderBy is different: with take()/skip() TypeORM runs a two-phase query
+    // (SELECT DISTINCT id ... WHERE id IN (...)) and resolves every order key back to a
+    // selected alias. A column name matches no entity property, so it dereferences an
+    // undefined metadata entry and throws "Cannot read properties of undefined (reading
+    // 'databaseName')" — this 500'd every listings request. `deadline` only worked by
+    // coincidence (property and column share a name); `price` and `createdAt` did not.
+    const sortCol: Record<string, 'priceFarm' | 'createdAt' | 'deadline'> = {
+      price:     'priceFarm',
+      createdAt: 'createdAt',
+      deadline:  'deadline',
     };
-    qb.orderBy(sortCol[sortBy] ?? 'l.created_at', order);
+    qb.orderBy(`l.${sortCol[sortBy] ?? 'createdAt'}`, order);
 
     const total = await qb.getCount();
     const listings = await qb.take(limit).skip(offset).getMany();
