@@ -140,4 +140,213 @@ describe('FarmToken', () => {
       expect(await token.allowance(owner.address, alice.address)).to.equal(amount);
     });
   });
+
+  // ─── Tiered tax (holdings-based) ───────────────────────────────────────
+  //
+  // Pins the model documented in FarmToken.sol:
+  //   tier = f(balanceOf(wallet)) — the *holder's* balance, NOT the pool's.
+  //   tier1 < 10,000 FARM · tier2 < 50,000 FARM · tier3 >= 50,000 FARM
+  //   buy 3% / 2% / 1%  ·  sell 5% / 3% / 1.5%  ·  hard cap 500 bps (5%)
+  //
+  // game_report.md claimed a pool-balance model with 500k/2M thresholds; these
+  // assertions exist so that wrong assumption cannot silently come back.
+  describe('tiered tax (holdings-based)', () => {
+    const TIER2 = ethers.parseUnits('10000', 18);
+    const TIER3 = ethers.parseUnits('50000', 18);
+
+    async function taxFixture() {
+      const [deployer, holder, pair, treasury] = await ethers.getSigners();
+      const Factory = await ethers.getContractFactory('FarmToken');
+      const t = (await Factory.deploy(deployer.address)) as any;
+      await t.waitForDeployment();
+      await t.connect(deployer).setPancakePair(pair.address);
+      await t.connect(deployer).setTreasuryBuybackPool(treasury.address);
+      // Seed the counter-party (a plain EOA standing in for the Pancake pair).
+      await t.connect(deployer).transfer(pair.address, ethers.parseUnits('500000', 18));
+      return { t, deployer, holder, pair, treasury };
+    }
+
+    it('exposes the documented thresholds and rates', async () => {
+      const { t } = await taxFixture();
+
+      expect(await t.tier2Balance()).to.equal(TIER2);
+      expect(await t.tier3Balance()).to.equal(TIER3);
+      expect(await t.buyTax1()).to.equal(300n);
+      expect(await t.buyTax2()).to.equal(200n);
+      expect(await t.buyTax3()).to.equal(100n);
+      expect(await t.sellTax1()).to.equal(500n);
+      expect(await t.sellTax2()).to.equal(300n);
+      expect(await t.sellTax3()).to.equal(150n);
+      expect(await t.MAX_TAX_BPS()).to.equal(500n);
+    });
+
+    it('maps wallet balances to tiers at the exact boundaries', async () => {
+      const { t, deployer, holder } = await taxFixture();
+
+      expect(await t.getTierOf(holder.address)).to.equal(1n);
+
+      await t.connect(deployer).transfer(holder.address, TIER2 - 1n);
+      expect(await t.getTierOf(holder.address)).to.equal(1n);
+
+      await t.connect(deployer).transfer(holder.address, 1n); // == tier2Balance
+      expect(await t.getTierOf(holder.address)).to.equal(2n);
+
+      await t.connect(deployer).transfer(holder.address, TIER3 - TIER2 - 1n);
+      expect(await t.getTierOf(holder.address)).to.equal(2n);
+
+      await t.connect(deployer).transfer(holder.address, 1n); // == tier3Balance
+      expect(await t.getTierOf(holder.address)).to.equal(3n);
+    });
+
+    it('taxes a tier-1 buy at 3% and routes it to the treasury pool', async () => {
+      const { t, holder, pair, treasury } = await taxFixture();
+
+      const amount = ethers.parseUnits('1000', 18);
+      const tax = (amount * 300n) / 10_000n;
+      const treasuryBefore = await t.balanceOf(treasury.address);
+
+      await expect(t.connect(pair).transfer(holder.address, amount))
+        .to.emit(t, 'TaxCollected')
+        .withArgs(pair.address, treasury.address, tax);
+
+      expect(await t.balanceOf(holder.address)).to.equal(amount - tax);
+      expect(await t.balanceOf(treasury.address)).to.equal(treasuryBefore + tax);
+    });
+
+    it('taxes a tier-3 buy at 1% while a fresh wallet pays 3%', async () => {
+      const { t, deployer, holder, pair, treasury } = await taxFixture();
+      const minnow = (await ethers.getSigners())[4];
+
+      await t.connect(deployer).transfer(holder.address, TIER3);
+      const amount = ethers.parseUnits('1000', 18);
+
+      const beforeWhale = await t.balanceOf(treasury.address);
+      await t.connect(pair).transfer(holder.address, amount);
+      const whaleTax = (await t.balanceOf(treasury.address)) - beforeWhale;
+
+      const beforeMinnow = await t.balanceOf(treasury.address);
+      await t.connect(pair).transfer(minnow.address, amount);
+      const minnowTax = (await t.balanceOf(treasury.address)) - beforeMinnow;
+
+      expect(whaleTax).to.equal((amount * 100n) / 10_000n);
+      expect(minnowTax).to.equal((amount * 300n) / 10_000n);
+      expect(whaleTax).to.be.lessThan(minnowTax);
+    });
+
+    it('taxes a tier-1 sell at 5%', async () => {
+      const { t, deployer, holder, pair, treasury } = await taxFixture();
+
+      const amount = ethers.parseUnits('1000', 18);
+      await t.connect(deployer).transfer(holder.address, amount); // wallet→wallet, untaxed
+      const tax = (amount * 500n) / 10_000n;
+      const pairBefore = await t.balanceOf(pair.address);
+      const treasuryBefore = await t.balanceOf(treasury.address);
+
+      await t.connect(holder).transfer(pair.address, amount);
+
+      expect(await t.balanceOf(pair.address)).to.equal(pairBefore + amount - tax);
+      expect(await t.balanceOf(treasury.address)).to.equal(treasuryBefore + tax);
+      expect(await t.balanceOf(holder.address)).to.equal(0n);
+    });
+
+    it('taxes a tier-3 sell at only 1.5%', async () => {
+      const { t, deployer, holder, pair, treasury } = await taxFixture();
+
+      await t.connect(deployer).transfer(holder.address, TIER3);
+      const amount = ethers.parseUnits('1000', 18);
+      const tax = (amount * 150n) / 10_000n;
+      const treasuryBefore = await t.balanceOf(treasury.address);
+
+      await t.connect(holder).transfer(pair.address, amount);
+
+      expect((await t.balanceOf(treasury.address)) - treasuryBefore).to.equal(tax);
+    });
+
+    it('never taxes wallet→wallet transfers or excluded accounts', async () => {
+      const { t, deployer, holder, pair, treasury } = await taxFixture();
+
+      const amount = ethers.parseUnits('1000', 18);
+      const treasuryBefore = await t.balanceOf(treasury.address);
+
+      await t.connect(deployer).transfer(holder.address, amount); // wallet→wallet
+      expect(await t.balanceOf(treasury.address)).to.equal(treasuryBefore);
+
+      await t.connect(deployer).excludeFromFee(holder.address, true);
+      await t.connect(pair).transfer(holder.address, amount); // pair→excluded
+      expect(await t.balanceOf(treasury.address)).to.equal(treasuryBefore);
+      expect(await t.balanceOf(holder.address)).to.equal(amount * 2n);
+    });
+
+    it('applies no tax at all while the pair is unset', async () => {
+      const [deployer, holder] = await ethers.getSigners();
+      const Factory = await ethers.getContractFactory('FarmToken');
+      const t = (await Factory.deploy(deployer.address)) as any;
+      await t.waitForDeployment();
+
+      await t.connect(deployer).transfer(holder.address, ethers.parseUnits('100', 18));
+
+      expect(await t.balanceOf(holder.address)).to.equal(ethers.parseUnits('100', 18));
+    });
+
+    it('reverts a taxable swap when the treasury pool is unset', async () => {
+      const [deployer, holder, pair] = await ethers.getSigners();
+      const Factory = await ethers.getContractFactory('FarmToken');
+      const t = (await Factory.deploy(deployer.address)) as any;
+      await t.waitForDeployment();
+      await t.connect(deployer).setPancakePair(pair.address);
+      await t.connect(deployer).transfer(pair.address, ethers.parseUnits('1000', 18));
+
+      await expect(t.connect(pair).transfer(holder.address, ethers.parseUnits('100', 18)))
+        .to.be.revertedWith('FarmToken: treasury not set');
+    });
+
+    it('freezes every transfer while paused (kill switch)', async () => {
+      const { t, deployer, holder } = await taxFixture();
+
+      await expect(t.connect(deployer).pause())
+        .to.emit(t, 'EmergencyPause')
+        .withArgs(deployer.address);
+
+      await expect(t.connect(deployer).transfer(holder.address, 1n))
+        .to.be.revertedWithCustomError(t, 'EnforcedPause');
+
+      await t.connect(deployer).unpause();
+      await t.connect(deployer).transfer(holder.address, 1n);
+      expect(await t.balanceOf(holder.address)).to.equal(1n);
+    });
+
+    it('restricts every parameter setter to the owner', async () => {
+      const { t, holder } = await taxFixture();
+
+      const attempts = [
+        () => t.connect(holder).pause(),
+        () => t.connect(holder).unpause(),
+        () => t.connect(holder).setPancakePair(holder.address),
+        () => t.connect(holder).setTreasuryBuybackPool(holder.address),
+        () => t.connect(holder).excludeFromFee(holder.address, true),
+        () => t.connect(holder).setTierThresholds(1n, 2n),
+        () => t.connect(holder).setTaxRates(1, 1, 1, 1, 1, 1),
+      ];
+
+      for (const attempt of attempts) {
+        await expect(attempt()).to.be.revertedWithCustomError(t, 'OwnableUnauthorizedAccount');
+      }
+    });
+
+    it('caps every tax rate at 5% and requires tier2 < tier3', async () => {
+      const { t, deployer } = await taxFixture();
+
+      await t.connect(deployer).setTaxRates(500, 500, 500, 500, 500, 500); // exactly at cap
+
+      await expect(t.connect(deployer).setTaxRates(501, 0, 0, 0, 0, 0))
+        .to.be.revertedWith('FarmToken: tax exceeds 5%');
+      await expect(t.connect(deployer).setTaxRates(0, 0, 0, 0, 0, 501))
+        .to.be.revertedWith('FarmToken: tax exceeds 5%');
+
+      await expect(t.connect(deployer).setTierThresholds(TIER3, TIER2))
+        .to.be.revertedWith('FarmToken: tier2 must be < tier3');
+      await expect(t.connect(deployer).setTierThresholds(TIER2, TIER2))
+        .to.be.revertedWith('FarmToken: tier2 must be < tier3');
+    });
+  });
 });

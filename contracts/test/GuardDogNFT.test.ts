@@ -262,4 +262,73 @@ describe('GuardDogNFT', () => {
       expect(await nft.paused()).to.be.false;
     });
   });
+
+  // ─── Fusion authorisation (BanditDogFusion is the only authorised minter) ──
+
+  describe('fusion authorisation', () => {
+    let fusionAddress: string;
+    let fusionSigner: SignerWithAddress;
+
+    beforeEach(async () => {
+      const backendSigner = (await ethers.getSigners())[4];
+      const Fusion = await ethers.getContractFactory('BanditDogFusion');
+      const fusion = await Fusion.deploy(
+        await token.getAddress(),
+        await nft.getAddress(),
+        owner.address,
+        backendSigner.address,
+      );
+      await fusion.waitForDeployment();
+      fusionAddress = await fusion.getAddress();
+      await nft.connect(owner).setFusionContract(fusionAddress);
+
+      // Impersonate the fusion contract so we can exercise mint()/burnShard()
+      // through the real `msg.sender == fusionContract` gate.
+      await ethers.provider.send('hardhat_impersonateAccount', [fusionAddress]);
+      await ethers.provider.send('hardhat_setBalance', [
+        fusionAddress,
+        '0x1000000000000000000',
+      ]);
+      fusionSigner = await ethers.getSigner(fusionAddress);
+    });
+
+    it('reverts mint() for any caller that is not the fusion contract', async () => {
+      await expect(nft.connect(alice).mint(alice.address, 1, 1, '0x'))
+        .to.be.revertedWith('Not fusion contract');
+    });
+
+    it('lets the fusion contract mint a capped breed through mint()', async () => {
+      await nft.connect(fusionSigner).mint(alice.address, 5, 2, '0x');
+      expect(await nft.balanceOf(alice.address, 5)).to.equal(2n);
+    });
+
+    it('lets the fusion contract mint unlimited Soul Shards (id 9999)', async () => {
+      await nft.connect(fusionSigner).mint(alice.address, 9999, 500, '0x');
+      expect(await nft.balanceOf(alice.address, 9999)).to.equal(500n);
+    });
+
+    it('still enforces maxSupply for capped breeds minted via the fusion contract', async () => {
+      await nft.connect(fusionSigner).mint(alice.address, 6, 100, '0x'); // Pitbull cap = 100
+      await expect(nft.connect(fusionSigner).mint(alice.address, 6, 1, '0x'))
+        .to.be.revertedWithCustomError(nft, 'MaxSupplyReached');
+    });
+
+    it('rejects an out-of-range breed id from the fusion contract', async () => {
+      await expect(nft.connect(fusionSigner).mint(alice.address, 7, 1, '0x'))
+        .to.be.revertedWithCustomError(nft, 'InvalidTokenId');
+    });
+
+    it('restricts burnShard() to the fusion contract', async () => {
+      await nft.connect(owner).mintTo(alice.address, 9999, 10);
+      await expect(nft.connect(alice).burnShard(alice.address, 1))
+        .to.be.revertedWith('Not fusion contract');
+    });
+
+    it('restricts setFusionContract() to the owner', async () => {
+      await expect(nft.connect(alice).setFusionContract(alice.address)).to.be.reverted;
+      await expect(nft.connect(owner).setFusionContract(bob.address))
+        .to.emit(nft, 'FusionContractUpdated')
+        .withArgs(bob.address);
+    });
+  });
 });

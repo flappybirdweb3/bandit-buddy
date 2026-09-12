@@ -33,6 +33,7 @@ describe('FarmTokenClaim', () => {
   const POOL_FUND = ethers.parseUnits('1000000', 18);
   const CLAIM_100 = ethers.parseUnits('100', 18);
   const MIN_CLAIM = ethers.parseUnits('1', 18);
+  const MAX_CLAIM = ethers.parseUnits('100000', 18);
 
   beforeEach(async () => {
     [owner, signer, alice, bob, attacker] = await ethers.getSigners();
@@ -305,6 +306,35 @@ describe('FarmTokenClaim', () => {
       await expect(
         claim.connect(alice).emergencyWithdraw(CLAIM_100),
       ).to.be.reverted;
+    });
+  });
+
+  // ─── Exact boundary claims ──────────────────────────────────────────────
+
+  describe('boundary claims', () => {
+    it('accepts a claim of exactly minClaimAmount', async () => {
+      const sig = await buildSignature(signer, alice.address, MIN_CLAIM, 0);
+      await expect(claim.connect(alice).claimTokens(MIN_CLAIM, 0, sig)).to.not.be.reverted;
+      expect(await token.balanceOf(alice.address)).to.equal(MIN_CLAIM);
+    });
+
+    it('accepts a claim of exactly maxClaimAmount', async () => {
+      // Pool holds POOL_FUND (1,000,000) so the 100k max claim is fully covered.
+      const sig = await buildSignature(signer, alice.address, MAX_CLAIM, 0);
+      await expect(claim.connect(alice).claimTokens(MAX_CLAIM, 0, sig)).to.not.be.reverted;
+      expect(await token.balanceOf(alice.address)).to.equal(MAX_CLAIM);
+      expect(await claim.poolBalance()).to.equal(POOL_FUND - MAX_CLAIM);
+    });
+  });
+
+  // ─── Pause semantics (explicit custom error) ────────────────────────────
+
+  describe('pause custom error', () => {
+    it('reverts with EnforcedPause rather than a bare revert', async () => {
+      await claim.pause();
+      const sig = await buildSignature(signer, alice.address, CLAIM_100, 0);
+      await expect(claim.connect(alice).claimTokens(CLAIM_100, 0, sig))
+        .to.be.revertedWithCustomError(claim, 'EnforcedPause');
     });
   });
 });
