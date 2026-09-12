@@ -37,6 +37,8 @@ export default defineConfig({
             id.includes('node_modules/scheduler')
           ) return 'react';
           if (id.includes('node_modules/lucide-react')) return 'lucide';
+          // viem chain defs are heavy (61KB gz) — keep them in lazy web3 chunks only
+          if (id.includes('viem/chains') || id.includes('node_modules/viem')) return undefined;
         },
       },
     },
