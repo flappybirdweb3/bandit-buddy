@@ -70,6 +70,15 @@ export default () => ({
       treasuryContractAddress: process.env.TREASURY_CONTRACT_ADDRESS || '',
       depositTreasuryAddress: process.env.DEPOSIT_TREASURY_ADDRESS || '',
       bscWssUrl: process.env.BSC_WSS_URL || '',
+      // Hard per-request timeout (ms) applied to EVERY JSON-RPC fetch. Left at the
+      // ethers default an unreachable node makes JsonRpcProvider retry "detect
+      // network" forever, so the HTTP request never settles and the reverse proxy
+      // answers 504. Override with BSC_RPC_TIMEOUT_MS.
+      rpcTimeoutMs: parseInt(process.env.BSC_RPC_TIMEOUT_MS ?? '5000', 10) || 5000,
+      // Absolute ceiling for app-level await of any single chain call, independent of
+      // how many fallback endpoints ethers decides to try. Override with
+      // BSC_RPC_DEADLINE_MS.
+      rpcRequestDeadlineMs: parseInt(process.env.BSC_RPC_DEADLINE_MS ?? '8000', 10) || 8000,
     };
   })(),
 

@@ -1,5 +1,5 @@
 import {
-  Injectable, BadRequestException, ForbiddenException,
+  Injectable, BadRequestException, ForbiddenException, HttpException,
   InternalServerErrorException, Logger, ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -81,6 +81,12 @@ export class Web3Service {
   /** Chain id actually served by the RPC endpoints, cached after the first successful probe. */
   private resolvedChainId: bigint | undefined;
 
+  /** Per-fetch JSON-RPC timeout, applied to every fallback endpoint. */
+  private readonly rpcTimeoutMs: number;
+
+  /** App-level ceiling for awaiting a single chain call, however many endpoints are tried. */
+  private readonly rpcRequestDeadlineMs: number;
+
   constructor(
     private readonly config: ConfigService,
     @InjectDataSource()
@@ -88,16 +94,67 @@ export class Web3Service {
     private readonly redis: RedisService,
     private readonly dexOracle: DexOracleService,
   ) {
+    this.rpcTimeoutMs = this.config.get<number>('web3.rpcTimeoutMs') ?? 5000;
+    this.rpcRequestDeadlineMs = this.config.get<number>('web3.rpcRequestDeadlineMs') ?? 8000;
+
     const privateKey = this.config.get<string>('web3.signerPrivateKey');
     if (privateKey && privateKey.length > 0 && privateKey !== '') {
       try {
         this.provider = this._buildFallbackProvider();
         this.adminWallet = new ethers.Wallet(privateKey).connect(this.provider);
         this.logger.log(`Signer wallet: ${this.adminWallet.address}`);
+
+        // Warm the chain-id cache OFF the request path. Signing binds block.chainid, so
+        // the first authenticated claim of the process used to pay for a cold, possibly
+        // slow RPC round-trip, and an unreachable node made that first request hang.
+        // Fire-and-forget on purpose: a failure here only logs, and the request path
+        // resolves lazily with its own hard deadline.
+        void this.resolveChainId().catch((err) =>
+          this.logger.warn(`Chain id pre-resolution failed: ${(err as Error).message}`),
+        );
       } catch {
         this.logger.warn('Failed to initialize admin wallet - Web3 features disabled');
       }
     }
+  }
+
+  /**
+   * Hard deadline around an arbitrary promise.
+   *
+   * `Promise.race` cannot cancel the losing branch, but every losing branch we race
+   * here is an ethers fetch that already aborts on `FetchRequest.timeout` — so no
+   * socket is left open. This is the last line of defence that guarantees a request
+   * settles instead of becoming a proxy-level 504.
+   */
+  private async withDeadline<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`${label} timed out after ${ms}ms`)),
+            ms,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Build one JSON-RPC endpoint with an explicit per-request timeout.
+   *
+   * Without `FetchRequest.timeout`, an unreachable node leaves JsonRpcProvider
+   * retrying network detection indefinitely ("failed to detect network ... retry in
+   * 1s"), which is exactly how a hung claim turns into a gateway 504.
+   */
+  private _buildJsonRpcProvider(url: string): ethers.JsonRpcProvider {
+    const request = new ethers.FetchRequest(url);
+    request.timeout = this.rpcTimeoutMs;
+    // polling:false — this service only performs request/response reads, never subscribes.
+    return new ethers.JsonRpcProvider(request, undefined, { polling: false });
   }
 
   /** #44: Ethers.js v6 FallbackProvider with ordered RPC endpoints. */
@@ -118,9 +175,12 @@ export class Web3Service {
       : ['https://bsc-dataseed2.binance.org/', 'https://bsc-dataseed3.binance.org/'];
 
     const networks = [primary, ...fallbacks].map((url, i) => ({
-      provider: new ethers.JsonRpcProvider(url),
+      provider: this._buildJsonRpcProvider(url),
       priority: i + 1,
-      stallTimeout: 2000,
+      // Align the stall threshold with the fetch timeout so a dead primary is
+      // abandoned on the same clock it aborts on, instead of 2s < 5s leaving a
+      // half-open request behind.
+      stallTimeout: this.rpcTimeoutMs,
       weight: 1,
     }));
     return new ethers.FallbackProvider(networks, undefined, { quorum: 1 });
@@ -140,20 +200,28 @@ export class Web3Service {
    * caller can decide how to degrade.
    */
   private async resolveChainId(): Promise<bigint> {
-    const network = await this.provider!.getNetwork();
+    // Fast path: the chain id of a live deployment cannot change, so the cached value
+    // is authoritative for the process lifetime. This is what keeps a warm claim at
+    // zero RPC calls, and therefore immune to a flapping node.
+    if (this.resolvedChainId !== undefined) return this.resolvedChainId;
+
+    // Wrapped so a dead node fails fast instead of retrying network detection forever.
+    const network = await this.withDeadline(
+      this.provider!.getNetwork(),
+      this.rpcRequestDeadlineMs,
+      'getNetwork()',
+    );
     const rpcChainId = BigInt(network.chainId);
 
-    if (this.resolvedChainId === undefined) {
-      this.resolvedChainId = rpcChainId;
+    this.resolvedChainId = rpcChainId;
 
-      const configuredChainId = Number(this.config.get<number>('web3.chainId'));
-      if (Number.isFinite(configuredChainId) && BigInt(configuredChainId) !== rpcChainId) {
-        this.logger.error(
-          `Chain id mismatch: web3.chainId=${configuredChainId} but the RPC reports ${rpcChainId}. ` +
-            `Signatures bind the RPC chain id — set BSC_CHAIN_ID=${rpcChainId} and point ` +
-            `BSC_RPC_URL at the same network to avoid mixed-chain reads.`,
-        );
-      }
+    const configuredChainId = Number(this.config.get<number>('web3.chainId'));
+    if (Number.isFinite(configuredChainId) && BigInt(configuredChainId) !== rpcChainId) {
+      this.logger.error(
+        `Chain id mismatch: web3.chainId=${configuredChainId} but the RPC reports ${rpcChainId}. ` +
+          `Signatures bind the RPC chain id — set BSC_CHAIN_ID=${rpcChainId} and point ` +
+          `BSC_RPC_URL at the same network to avoid mixed-chain reads.`,
+      );
     }
 
     return this.resolvedChainId;
@@ -193,14 +261,24 @@ export class Web3Service {
     // connection error — not here.
     let killActive = false;
     try {
-      killActive = await this.dexOracle.isKillSwitchActive();
+      // Deadlined for the same reason as the RPC calls: a stalled Redis connection
+      // must not be able to hold an HTTP request open until the proxy gives up.
+      killActive = await this.withDeadline(
+        this.dexOracle.isKillSwitchActive(),
+        this.rpcRequestDeadlineMs,
+        'kill-switch check',
+      );
     } catch (err) {
       this.logger.error(
         `Kill-switch check unavailable, proceeding without it: ${(err as Error).message}`,
       );
     }
     if (killActive) {
-      const reason = await this.dexOracle.getKillSwitchReason().catch(() => null);
+      const reason = await this.withDeadline(
+        this.dexOracle.getKillSwitchReason(),
+        this.rpcRequestDeadlineMs,
+        'kill-switch reason',
+      ).catch(() => null);
       throw new ServiceUnavailableException(
         reason ?? 'Claiming paused due to high market volatility. Try again later.',
       );
@@ -237,6 +315,12 @@ export class Web3Service {
     await queryRunner.startTransaction();
 
     try {
+      // Never wait forever on a row lock. Postgres defaults lock_timeout to 0 (infinite),
+      // so a sibling transaction holding this user's row — an admin edit, or a request
+      // that is itself stuck — would keep us open until the gateway timed out with 504.
+      // 3s converts that into an immediate, explicit 503.
+      await queryRunner.query(`SET LOCAL lock_timeout = '3000ms'`);
+
       const lockedUser = await queryRunner.manager
         .createQueryBuilder(User, 'u')
         .where('u.id = :id', { id: user.id })
@@ -311,6 +395,30 @@ export class Web3Service {
       };
     } catch (err) {
       await queryRunner.rollbackTransaction();
+
+      // Domain verdicts (400 insufficient gold, 403 low trust, 503 kill switch) keep
+      // their own status and message.
+      if (err instanceof HttpException) throw err;
+
+      // Row-lock timeout (SQLSTATE 55P03 from SET LOCAL lock_timeout above). The account
+      // is momentarily busy, not broken — say so instead of surfacing a generic 500.
+      if ((err as { code?: string })?.code === '55P03') {
+        this.logger.warn(`Claim signature blocked on row lock for user ${user.id}`);
+        throw new ServiceUnavailableException(
+          'Your account is busy processing another action — please retry in a moment.',
+        );
+      }
+
+      // Transport failure (node down / timeout / rate limit). Operational condition,
+      // not a defect: answer 503 with an actionable message rather than letting the
+      // request hang until the reverse proxy emits a 504.
+      if (isRpcFailure(err)) {
+        this.logger.warn(`Claim signature failed on RPC transport: ${(err as Error).message}`);
+        throw new ServiceUnavailableException(
+          'Blockchain network is busy — please try again in a moment.',
+        );
+      }
+
       throw err;
     } finally {
       await queryRunner.release();
