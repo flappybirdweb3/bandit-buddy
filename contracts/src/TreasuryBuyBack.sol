@@ -57,8 +57,19 @@ contract TreasuryBuyBack is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * Swap BNB in contract for $FARM, then burn. Called by keeper bot.
-     * @param bnbAmount BNB to swap (must be ≤ contract balance).
-     * @param minFarmOut Minimum FARM to receive (slippage guard).
+     *
+     * MODIFIER ORDER — access → lock → state, and it must not change:
+     *   - onlyOwner first rejects unauthorised callers before any SSTORE. A re-entrant
+     *     callback from the router is never the owner, so it dies at this gate.
+     *   - nonReentrant then holds the lock across BOTH external calls (getAmountsOut and
+     *     swapExactETHForTokens) and the burn. Moving it after the swap defeats it.
+     *   - whenNotPaused last. Its exact position is immaterial (a revert rolls back the
+     *     lock) but keeping it adjacent to the body reads as the state gate.
+     *
+     * @param bnbAmount BNB to swap (must be > 0 and ≤ contract balance).
+     * @param minFarmOut Caller's floor. The EFFECTIVE floor is the stricter of this and the
+     *                   slippageBps-derived quote floor, so passing 0 no longer disables
+     *                   slippage protection.
      */
     function executeBuyBack(uint256 bnbAmount, uint256 minFarmOut)
         external
@@ -66,16 +77,28 @@ contract TreasuryBuyBack is ReentrancyGuard, Ownable, Pausable {
         nonReentrant
         whenNotPaused
     {
+        // A zero-value swap is either a no-op or a router revert; reject it up front.
+        if (bnbAmount == 0) revert InsufficientBalance();
         if (address(this).balance < bnbAmount) revert InsufficientBalance();
 
         address[] memory path = new address[](2);
         path[0] = wbnb;
         path[1] = address(farmToken);
 
+        // slippageBps was previously declared and settable but NEVER read — the only floor
+        // was the caller-supplied minFarmOut, so a keeper passing 0 accepted any fill, and
+        // the acquired FARM is burned immediately, making the loss permanent.
+        // getAmountsOut is declared `view`, so the compiler emits STATICCALL and the quote
+        // cannot re-enter. Quote and swap execute in the same transaction, so the floor is
+        // measured against the exact price the swap will see.
+        uint256[] memory quote = IPancakeRouter(pancakeRouter).getAmountsOut(bnbAmount, path);
+        uint256 quoteFloor = (quote[1] * (10_000 - slippageBps)) / 10_000;
+        uint256 effectiveMinOut = quoteFloor > minFarmOut ? quoteFloor : minFarmOut;
+
         uint256 balBefore = farmToken.balanceOf(address(this));
 
         IPancakeRouter(pancakeRouter).swapExactETHForTokens{value: bnbAmount}(
-            minFarmOut,
+            effectiveMinOut,
             path,
             address(this),
             block.timestamp + 300
@@ -134,6 +157,13 @@ interface IPancakeRouter {
         address to,
         uint256 deadline
     ) external payable returns (uint256[] memory amounts);
+
+    /// @dev Declared `view` on purpose: Solidity then emits STATICCALL, so this quote
+    ///      cannot re-enter the buyback even if `pancakeRouter` were ever untrusted.
+    function getAmountsOut(uint256 amountIn, address[] calldata path)
+        external
+        view
+        returns (uint256[] memory amounts);
 }
 
 interface IBurnable {

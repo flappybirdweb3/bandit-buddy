@@ -12,6 +12,7 @@ import { NftGuardDog } from '../farm/entities/nft-guard-dog.entity';
 import { ClaimIntent } from './entities/claim-intent.entity';
 import { RedisService } from '../../common/redis.service';
 import { DexOracleService } from './dex-oracle.service';
+import { buildClaimDigest } from './claim-digest';
 
 const ERC1155_ABI = [
   'function balanceOf(address account, uint256 id) view returns (uint256)',
@@ -111,6 +112,27 @@ export class Web3Service {
       throw new InternalServerErrorException('Signing service not configured');
     }
 
+    // Resolve the domain BEFORE opening the transaction: the digest is bound to
+    // (chainid, claimContract) and getNetwork() may hit the RPC. Never hold a
+    // pessimistic_write row lock across network I/O. (ethers v6 memoises getNetwork(), so
+    // this is one RPC call per process lifetime, not per claim.)
+    const claimContract = this.config.get<string>('web3.claimContractAddress') ?? '';
+    if (!ethers.isAddress(claimContract)) {
+      throw new InternalServerErrorException(
+        'Claim contract address not configured (CLAIM_CONTRACT_ADDRESS)',
+      );
+    }
+
+    const configuredChainId = Number(this.config.get<number>('web3.chainId'));
+    const rpcChainId = (await this.provider!.getNetwork()).chainId;
+    if (Number.isFinite(configuredChainId) && BigInt(configuredChainId) !== rpcChainId) {
+      this.logger.error(
+        `Chain id mismatch: web3.chainId=${configuredChainId} but RPC reports ${rpcChainId}. ` +
+          `Signatures bind the RPC chain id — set BSC_CHAIN_ID=${rpcChainId} or point ` +
+          `BSC_RPC_URL at the intended network.`,
+      );
+    }
+
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
@@ -140,9 +162,24 @@ export class Web3Service {
         .execute();
 
       const amountWei = ethers.parseUnits(amountToClaim.toString(), 18);
-      const messageHash = ethers.solidityPackedKeccak256(
-        ['address', 'uint256', 'uint256'],
-        [user.walletAddress, amountWei, currentNonce],
+
+      // Sign against the wallet read UNDER the row lock. The pre-lock copy can be stale,
+      // and FarmTokenClaim only pays out to the address bound into the signature — signing
+      // a stale address produces a signature the player's current wallet cannot use.
+      const walletAddress = lockedUser.walletAddress;
+      if (!walletAddress) {
+        throw new BadRequestException(
+          'No wallet address linked. Please link your BSC wallet first.',
+        );
+      }
+
+      // Must match FarmTokenClaim.hashMessage() byte for byte — see claim-digest.spec.ts.
+      const messageHash = buildClaimDigest(
+        rpcChainId,
+        claimContract,
+        walletAddress,
+        amountWei,
+        currentNonce,
       );
       const signature = await this.adminWallet.signMessage(ethers.getBytes(messageHash));
 
@@ -167,7 +204,8 @@ export class Web3Service {
       this.logger.log(`Claim signature: user=${user.id} amount=${amountToClaim} nonce=${currentNonce}`);
 
       return {
-        userAddress: user.walletAddress,
+        // The address bound into the signature — the client must call claimTokens from it.
+        userAddress: walletAddress,
         amountWei: amountWei.toString(),
         nonce: currentNonce,
         signature,

@@ -17,13 +17,17 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
  *   1. Player earns GOLD in-game (off-chain).
  *   2. Player calls POST /web3/claim-signature on the Game Server.
  *   3. Game Server validates trust_score, deducts GOLD, generates ECDSA sig:
- *        messageHash = keccak256(abi.encodePacked(player, amountWei, nonce))
+ *        messageHash = keccak256(abi.encodePacked(
+ *                          block.chainid, address(this), player, amountWei, nonce))
  *        signature   = adminWallet.signMessage(getBytes(messageHash))  // ethers v6
  *   4. Player calls claimTokens(amount, nonce, signature) here.
  *   5. Contract verifies sig → marks nonce used → transfers FARM.
  *
  * Security properties:
  *   - Replay protection: per-(address,nonce) used bitmap.
+ *   - Domain separation: block.chainid and address(this) are bound into the signed digest,
+ *     so a signature is valid only on THIS chain and THIS deployment. A testnet signature
+ *     can never be replayed on mainnet even when the backend signer key is shared.
  *   - Reentrancy guard: CEI pattern + nonReentrant.
  *   - Signer rotation: owner can update signer (key rotation, incident response).
  *   - Pause: owner can freeze claims in emergency.
@@ -82,8 +86,10 @@ contract FarmTokenClaim is ReentrancyGuard, Ownable, Pausable {
      * @param nonce     Monotonically increasing per-user nonce from backend DB.
      * @param signature Compact ECDSA signature (65 bytes) from the signer wallet.
      *
-     * The signer must have produced:
-     *   bytes32 hash = keccak256(abi.encodePacked(msg.sender, amount, nonce));
+     * The signer must have produced (identical to hashMessage() below — do not duplicate
+     * the pre-image here, it is the exact thing that drifted before):
+     *   bytes32 hash = keccak256(abi.encodePacked(
+     *                      block.chainid, address(this), msg.sender, amount, nonce));
      *   bytes32 eth  = MessageHashUtils.toEthSignedMessageHash(hash);
      *   signature    = ECDSA.sign(eth, signerPrivKey);
      */
@@ -100,9 +106,11 @@ contract FarmTokenClaim is ReentrancyGuard, Ownable, Pausable {
         if (usedNonces[msg.sender][nonce])
             revert NonceAlreadyUsed(msg.sender, nonce);
 
-        // 3. Signature verification
-        bytes32 messageHash = keccak256(abi.encodePacked(msg.sender, amount, nonce));
-        bytes32 ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
+        // 3. Signature verification — digest is domain-bound to (chainid, this contract).
+        //    Delegating to hashMessage() keeps signing and verification in lockstep: the
+        //    backend can reproduce the digest via the same public view, so the two sides
+        //    can never drift apart again.
+        (, bytes32 ethSignedHash) = hashMessage(msg.sender, amount, nonce);
         address recovered = ethSignedHash.recover(signature);
         if (recovered != signerAddress) revert InvalidSignature();
 
@@ -160,15 +168,30 @@ contract FarmTokenClaim is ReentrancyGuard, Ownable, Pausable {
     }
 
     /**
-     * @dev Off-chain helper: reproduce the exact hash the backend generates.
-     *      Call this in tests to verify signature math matches.
+     * @dev Reproduce the exact digest the backend must sign — and the one claimTokens()
+     *      verifies. Public (not external) so claimTokens can call it internally.
+     *
+     *      DOMAIN SEPARATION: block.chainid and address(this) are prepended to the
+     *      pre-image, so a signature minted for one chain (e.g. BSC testnet 97) cannot be
+     *      replayed on another (e.g. mainnet 56), nor against a redeployed instance of
+     *      this contract — even when the same backend signer key is used everywhere.
+     *
+     *      abi.encodePacked is safe here: every argument is fixed-width (uint256 /
+     *      address), so the concatenation is injective and there is no dynamic-type
+     *      ambiguity to exploit.
+     *
+     *      `view`, not `pure` — block.chainid and address(this) are read at runtime.
+     *      NOTE: the return tuple is preserved (messageHash, ethSignedHash) so existing
+     *      callers and tests keep compiling.
      */
     function hashMessage(
         address user,
         uint256 amount,
         uint256 nonce
-    ) external pure returns (bytes32 messageHash, bytes32 ethSignedHash) {
-        messageHash = keccak256(abi.encodePacked(user, amount, nonce));
+    ) public view returns (bytes32 messageHash, bytes32 ethSignedHash) {
+        messageHash = keccak256(
+            abi.encodePacked(block.chainid, address(this), user, amount, nonce)
+        );
         ethSignedHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
     }
 }
