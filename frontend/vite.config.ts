@@ -10,7 +10,18 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': { target: 'http://localhost:3002', changeOrigin: true },
+      // Target must match the backend's listening port: backend/src/main.ts binds
+      // `process.env.PORT || 3003`, and run_load_test.sh probes :3003. This pointed at
+      // :3002, so `npm run dev` proxied every /api call to a port nothing listens on
+      // (ECONNREFUSED → "Failed to fetch") while the backend was running fine on 3003.
+      // A deployed build never notices, because a reverse proxy owns that mapping there.
+      //
+      // Env-overridable so a container that genuinely publishes a different port
+      // (e.g. `-p 3002:3003`) stays reachable without editing this file.
+      '/api': {
+        target: process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:3003',
+        changeOrigin: true,
+      },
     },
   },
   build: {
