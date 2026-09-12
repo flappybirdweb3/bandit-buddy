@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense, type ReactNode, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 const GameCanvas = lazy(() => import('@/game/GameCanvas').then(m => ({ default: m.GameCanvas })));
 import { eventBus } from '@/game/EventBus';
@@ -17,9 +17,43 @@ import { useFullscreen } from '@/hooks/useFullscreen';
 import { useOfflineDetection } from '@/hooks/useOfflineDetection';
 import { api } from '@/api/client';
 import WebApp from '@twa-dev/sdk';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Maximize2, Minimize2 } from 'lucide-react';
 import { soundManager } from '@/sounds/SoundManager';
 import type { PlotClickEvent, FarmData } from '@/types/game.types';
+
+// ── Desktop detection ────────────────────────────────────────────────────────
+// Telegram Desktop / macOS / Web platforms open Mini Apps in a large panel
+// that is not phone-sized. We constrain the game to a 430px centered frame.
+function detectDesktop(): boolean {
+  const platform = (WebApp as any).platform ?? '';
+  return (['tdesktop', 'macos', 'web', 'weba'] as string[]).includes(platform)
+    || window.innerWidth > 520;
+}
+
+// On desktop, all position:fixed children are contained within the 430px frame
+// because CSS `transform` on a parent makes it the fixed-positioning containing block.
+function DesktopFrame({ enabled, children }: { enabled: boolean; children: ReactNode }) {
+  if (!enabled) return <>{children}</>;
+  return (
+    <div style={{
+      position: 'fixed', inset: 0,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: '#020802',
+    }}>
+      <div style={{
+        position: 'relative',
+        width: '430px',
+        height: '100%',
+        maxHeight: '932px',
+        overflow: 'hidden',
+        transform: 'translateZ(0)', // makes position:fixed children relative to this frame
+        boxShadow: '0 0 80px rgba(0,0,0,0.9), 0 0 0 1px rgba(255,255,255,0.05)',
+      }}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 const SeedSelectModal  = lazy(() => import('@/components/modals/SeedSelectModal').then(m => ({ default: m.SeedSelectModal })));
 const HarvestModal     = lazy(() => import('@/components/modals/HarvestModal').then(m => ({ default: m.HarvestModal })));
@@ -46,15 +80,22 @@ type ActiveModal =
 
 export function App() {
   const [started, setStarted] = useState(() => localStorage.getItem('bb_entered') === '1');
-  const [showTutorial, setShowTutorial] = useState(false);
+  // Show tutorial if user has entered the game but hasn't completed the tutorial yet
+  // (handles the case where backend was down on first Enter Farm click)
+  const [showTutorial, setShowTutorial] = useState(
+    () => localStorage.getItem('bb_entered') === '1' && localStorage.getItem(TUTORIAL_KEY) !== '1',
+  );
   const [modal, setModal] = useState<ActiveModal>(null);
   const [visitState, setVisitState] = useState<{ userId: string; username: string } | null>(null);
   const [preSelectedSeed, setPreSelectedSeed] = useState<{ seedId: string; seedName: string } | null>(null);
-  const { myFarm, isLoading, profile } = useGame();
+  const { myFarm, isLoading, profile, profileError, refetchAll } = useGame();
   const qc = useQueryClient();
 
+  const [isDesktop] = useState(detectDesktop);
+  const [desktopFullscreen, setDesktopFullscreen] = useState(false);
+
   const { showSetup, dismissSetup } = useAutoWallet(profile);
-  const { requestFullscreen, supported: fsSupported } = useFullscreen();
+  const { requestFullscreen, exitFullscreen, supported: fsSupported } = useFullscreen();
   useOfflineDetection();
 
   const handleDismissSetup = () => {
@@ -62,18 +103,55 @@ export function App() {
     qc.invalidateQueries({ queryKey: ['profile'] });
   };
 
-  // Maximize viewport: expand() works on all Telegram versions;
-  // requestFullscreen() adds true fullscreen on Telegram 10.0+ (Bot API 7.7)
+  // On desktop: expand() fills the Telegram panel (fine), but skip requestFullscreen()
+  // which would take over the entire OS screen and break the centered layout.
+  // On mobile: both expand() and requestFullscreen() are used as before.
   const enterFullView = useCallback(() => {
     WebApp.expand();
-    if (fsSupported) requestFullscreen();
-  }, [fsSupported, requestFullscreen]);
+    if (!isDesktop) {
+      if (fsSupported) requestFullscreen();
+      try { (WebApp as any).disableVerticalSwipes?.(); } catch {}
+    }
+  }, [isDesktop, fsSupported, requestFullscreen]);
+
+  // Desktop fullscreen toggle: when user explicitly enables it, go OS fullscreen
+  const toggleDesktopFullscreen = useCallback(() => {
+    if (desktopFullscreen) {
+      exitFullscreen();
+      setDesktopFullscreen(false);
+    } else {
+      if (fsSupported) requestFullscreen();
+      setDesktopFullscreen(true);
+    }
+  }, [desktopFullscreen, fsSupported, requestFullscreen, exitFullscreen]);
 
   // Auto-expand for returning users on mount
   useEffect(() => {
     if (started) enterFullView();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [started]);
+
+  // Back button — closes open modal, or returns to own farm from visit, or closes app
+  useEffect(() => {
+    const bb = WebApp.BackButton;
+    if (!bb) return;
+
+    const hasBack = !!modal || !!visitState;
+    if (hasBack) {
+      bb.show();
+    } else {
+      bb.hide();
+    }
+
+    const handler = () => {
+      if (modal) { setModal(null); return; }
+      if (visitState) { setVisitState(null); eventBus.emit('return-to-own-farm'); return; }
+      WebApp.close();
+    };
+
+    bb.onClick(handler);
+    return () => { bb.offClick(handler); };
+  }, [modal, visitState]);
 
   // Unlock AudioContext on first user gesture (iOS/Telegram WebView requires this)
   useEffect(() => {
@@ -200,65 +278,71 @@ export function App() {
 
   // Guard: production access outside Telegram → show redirect screen
   if (import.meta.env.PROD && !WebApp.initData) {
-    return <NotInTelegramScreen />;
+    return <DesktopFrame enabled={isDesktop}><NotInTelegramScreen /></DesktopFrame>;
   }
 
   // Returning user: show loading overlay while data loads (canvas starts in background)
   if (started && isLoading) {
     return (
-      <div className="h-full w-full relative overflow-hidden"
-        style={{ background: 'linear-gradient(160deg, #0a1f0a 0%, #1a3a1a 40%, #1e3a5f 100%)' }}>
-        <SkeletonHUD />
-        <ToastContainer />
-      </div>
+      <DesktopFrame enabled={isDesktop}>
+        <div className="h-full w-full relative overflow-hidden"
+          style={{ background: 'linear-gradient(160deg, #0a1f0a 0%, #1a3a1a 40%, #1e3a5f 100%)' }}>
+          <SkeletonHUD />
+          <ToastContainer />
+        </div>
+      </DesktopFrame>
     );
   }
 
-  // Auth/API error: started=true but profile never loaded — offer retry
+  // Auth/API error: started=true but profile never loaded — show error details and auto-retry
   if (started && !isLoading && !profile) {
+    const errMsg = profileError?.message ?? 'Unknown error';
     return (
-      <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 px-6"
-        style={{ background: 'linear-gradient(160deg, #0a1f0a 0%, #1a3a1a 40%, #1e3a5f 100%)' }}>
-        <div className="text-5xl">🦝</div>
-        <div className="text-center">
-          <p className="text-white font-black text-lg">Connection error</p>
-          <p className="text-white/40 text-sm mt-1">Could not reach the farm server.</p>
-        </div>
-        <button
-          onClick={() => window.location.reload()}
-          className="px-8 py-3 rounded-2xl font-bold text-white text-sm active:scale-95 transition-all"
-          style={{ background: 'linear-gradient(135deg, #22c55e, #15803d)', boxShadow: '0 4px 20px rgba(34,197,94,0.35)' }}
-        >
-          Retry
-        </button>
-      </div>
+      <DesktopFrame enabled={isDesktop}>
+        <ConnectionErrorScreen errMsg={errMsg} onRetry={refetchAll} />
+      </DesktopFrame>
     );
   }
 
   // New user: show welcome screen (loading → then Enter Farm button)
   if (!started) {
     return (
-      <WelcomeScreen
-        onEnter={() => {
-          soundManager.unlock();
-          enterFullView();
-          localStorage.setItem('bb_entered', '1');
-          setStarted(true);
-          if (localStorage.getItem(TUTORIAL_KEY) !== '1') {
-            setShowTutorial(true);
-          }
-        }}
-      />
+      <DesktopFrame enabled={isDesktop}>
+        <WelcomeScreen
+          onEnter={() => {
+            soundManager.unlock();
+            enterFullView();
+            localStorage.setItem('bb_entered', '1');
+            setStarted(true);
+            if (localStorage.getItem(TUTORIAL_KEY) !== '1') {
+              setShowTutorial(true);
+            }
+          }}
+        />
+      </DesktopFrame>
     );
   }
 
   return (
+    <DesktopFrame enabled={isDesktop && !desktopFullscreen}>
     <div className="h-full w-full relative overflow-hidden bg-black">
       {/* ── Phaser canvas (full-screen background, lazy-loaded) ── */}
       <Suspense fallback={null}><GameCanvas /></Suspense>
 
       {/* ── Top HUD ── */}
       <HUD />
+
+      {/* ── Desktop fullscreen toggle button ── */}
+      {isDesktop && (
+        <button
+          onClick={toggleDesktopFullscreen}
+          title={desktopFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+          className="fixed z-50 pointer-events-auto glass rounded-lg p-1.5 text-white/40 hover:text-white/80 active:scale-90 transition-all"
+          style={{ top: 'calc(var(--tg-safe-area-inset-top, 8px) + 6px)', right: '48px' }}
+        >
+          {desktopFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </button>
+      )}
 
       {/* ── Visit banner ── */}
       {visitState && (
@@ -350,6 +434,59 @@ export function App() {
 
       <SoundSystem />
       <ToastContainer />
+    </div>
+    </DesktopFrame>
+  );
+}
+
+// Diagnostic error screen: auto-pings /api/ping (no auth) to separate
+// "server unreachable" from "auth header blocked by network/proxy"
+function ConnectionErrorScreen({ errMsg, onRetry }: { errMsg: string; onRetry: () => void }) {
+  const [pingResult, setPingResult] = useState<'testing' | 'ok' | 'fail'>('testing');
+  const ran = useRef(false);
+
+  useEffect(() => {
+    if (ran.current) return;
+    ran.current = true;
+    fetch('/api/ping')
+      .then(r => r.ok ? setPingResult('ok') : setPingResult('fail'))
+      .catch(() => setPingResult('fail'));
+  }, []);
+
+  const hint =
+    pingResult === 'testing' ? null :
+    pingResult === 'ok'
+      ? 'Server is reachable. Try disabling any VPN or proxy in Telegram settings.'
+      : 'Server unreachable. In Telegram → Settings → Proxy: disable proxy. Or switch to mobile data.';
+
+  return (
+    <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 px-6"
+      style={{ background: 'linear-gradient(160deg, #0a1f0a 0%, #1a3a1a 40%, #1e3a5f 100%)' }}>
+      <div className="text-5xl">🦝</div>
+      <div className="text-center">
+        <p className="text-white font-black text-lg">Connection error</p>
+        <p className="text-white/40 text-sm mt-1">Could not reach the farm server.</p>
+        {hint && (
+          <p className="text-yellow-300/80 text-xs mt-3 px-2 leading-relaxed">{hint}</p>
+        )}
+        <p className="text-white/20 text-[10px] mt-2 font-mono break-all px-2">{errMsg}</p>
+      </div>
+      <div className="flex gap-3">
+        <button
+          onClick={() => onRetry()}
+          className="px-6 py-3 rounded-2xl font-bold text-white text-sm active:scale-95 transition-all"
+          style={{ background: 'linear-gradient(135deg, #22c55e, #15803d)', boxShadow: '0 4px 20px rgba(34,197,94,0.35)' }}
+        >
+          Retry
+        </button>
+        <button
+          onClick={() => window.location.reload()}
+          className="px-6 py-3 rounded-2xl font-bold text-white/60 text-sm active:scale-95 transition-all"
+          style={{ background: 'rgba(255,255,255,0.08)' }}
+        >
+          Reload
+        </button>
+      </div>
     </div>
   );
 }

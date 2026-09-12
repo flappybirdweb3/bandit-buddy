@@ -3,7 +3,8 @@ import type {
   UserProfile, FarmData, SeedConfig, StealResult, ClaimPayload, LeaderboardData,
   FriendEntry, ReferralInfo, DailyClaimResult, DailyQuest, ShopCatalog,
   NotificationInbox, ActivityEntry, Achievement, NftStatus, ExchangeRate,
-  BuildingStatus, MarketplaceListing,
+  BuildingStatus, MarketplaceListing, MarketplaceListingsResponse, InventoryItem, BarnData,
+  DepositInfo, DepositVerifyResult, DexTier,
 } from '@/types/game.types';
 
 const BASE_URL = '/api';
@@ -30,21 +31,77 @@ function getInitData(): string {
   return `user=${encodeURIComponent(mockUser)}&hash=devhash`;
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-telegram-init-data': getInitData(),
-      ...options.headers,
-    },
-  });
+// Auth via cookie (bb_sess) set by GET /api/auth/session.
+// Cookie is sent automatically by the browser — no custom headers needed on game requests.
+// This bypasses ANY proxy that strips Authorization or custom headers.
+let _sessionDone = false;
+let _sessionPromise: Promise<void> | null = null;
 
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.message || data.error || 'Request failed');
+function ensureSession(): Promise<void> {
+  if (_sessionDone) return Promise.resolve();
+  if (_sessionPromise) return _sessionPromise;
+
+  // Simple GET — no body, no custom headers — works through any proxy.
+  // initData is base64-encoded in the query param to avoid URL special chars.
+  const b64 = btoa(unescape(encodeURIComponent(getInitData())));
+  _sessionPromise = fetch(`${BASE_URL}/auth/session?d=${encodeURIComponent(b64)}`)
+    .then(async (r) => {
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        throw new Error(`auth-${r.status}: ${text.slice(0, 120)}`);
+      }
+      _sessionDone = true;
+    })
+    .catch((err) => {
+      _sessionPromise = null; // allow retry
+      throw err;
+    });
+
+  return _sessionPromise;
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  // Capture diagnostic context so "Failed to fetch" errors reveal the root cause
+  const platform = (WebApp as any).platform ?? 'unknown';
+  const hasInitData = !!WebApp.initData;
+  const online = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+  // Ensure session cookie is set before any game request
+  await ensureSession();
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      ...options,
+      // credentials: 'same-origin' is the default — cookie is sent automatically
+      headers: {
+        // Only set Content-Type for requests that have a body (POST/PATCH/PUT).
+        // GET requests with Content-Type can trigger CORS preflight and confuse proxies.
+        ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        // No Authorization header — auth is via bb_sess cookie, transparent to proxies
+        ...options.headers,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`${msg} [platform=${platform} online=${online} initData=${hasInitData}]`);
   }
-  return data as T;
+
+  if (!res.ok) {
+    let errorMsg = `HTTP ${res.status}`;
+    try {
+      const data = await res.json();
+      errorMsg = data.message || data.error || errorMsg;
+    } catch {}
+    if (res.status === 401) {
+      // Session cookie expired — force re-auth on next request
+      _sessionDone = false;
+      _sessionPromise = null;
+    }
+    throw new Error(errorMsg);
+  }
+
+  return res.json() as Promise<T>;
 }
 
 export const api = {
@@ -63,7 +120,7 @@ export const api = {
     request('/action/plant', { method: 'POST', body: JSON.stringify({ plotId, seedId }) }),
 
   harvest: (plotId: string) =>
-    request<{ goldEarned: number; levelUp: boolean; newLevel: number; message: string }>(
+    request<{ cropEarned: number; cropType: string; goldLostToThieves: number; levelUp: boolean; newLevel: number; message: string }>(
       '/action/harvest', { method: 'POST', body: JSON.stringify({ plotId }) }),
 
   steal: (targetUserId: string, plotId: string) =>
@@ -79,8 +136,35 @@ export const api = {
       body: JSON.stringify({ amountToClaim }),
     }),
 
+  refundClaim: (nonce: number) =>
+    request<{ refunded: boolean; goldRestored: number }>('/web3/refund-claim', {
+      method: 'POST',
+      body: JSON.stringify({ nonce }),
+    }),
+
+  markClaimCompleted: (nonce: number) =>
+    request<{ ok: boolean }>('/web3/mark-claim-completed', {
+      method: 'POST',
+      body: JSON.stringify({ nonce }),
+    }),
+
   syncNft: () => request<{ synced: number; totalNftDefense: number; dogs: Array<{ tokenId: number; dogType: string; defensePower: number; balance: number }>; message: string }>('/web3/sync-nft', { method: 'POST' }),
   getNftStatus: () => request<NftStatus>('/web3/nft-status'),
+  setDogGuarding: (tokenId: number, isGuarding: boolean) =>
+    request<{ tokenId: number; isGuarding: boolean; message: string }>('/web3/nft-dog/guard', {
+      method: 'PATCH',
+      body: JSON.stringify({ tokenId, isGuarding }),
+    }),
+  setDogGuardingById: (dogId: string, isGuarding: boolean) =>
+    request<{ dogId: string; dogType: string; isGuarding: boolean; message: string }>('/web3/dog/guard-by-id', {
+      method: 'PATCH',
+      body: JSON.stringify({ dogId, isGuarding }),
+    }),
+  getShopDogs: () => request<{ id: string; dogType: string; defensePower: number }[]>('/web3/shop-dogs'),
+  tokenizeDog: (count: 1 | 3) =>
+    request<{ walletAddress: string; count: number; nonce: number; signature: string; contractAddress: string }>(
+      '/web3/tokenize-dog', { method: 'POST', body: JSON.stringify({ count }) },
+    ),
 
   // Leaderboard
   getLeaderboard: (category: 'thieves' | 'rich' | 'streak' | 'farmer' = 'thieves') =>
@@ -142,6 +226,14 @@ export const api = {
 
   // Web3 — exchange rate
   getExchangeRate: () => request<ExchangeRate>('/web3/exchange-rate'),
+  getDexTier: () => request<DexTier>('/web3/dex-tier'),
+
+  // Web3 — deposit $FARM → GOLD (#72)
+  getDepositInfo: () => request<DepositInfo>('/web3/deposit-info'),
+  verifyDeposit: (txHash: string) => request<DepositVerifyResult>('/web3/deposit-verify', {
+    method: 'POST',
+    body: JSON.stringify({ txHash }),
+  }),
 
   // Farm buildings / maintenance (#36)
   getBuildingStatus: () => request<BuildingStatus>('/action/buildings'),
@@ -157,17 +249,60 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ stealLogId }) },
     ),
 
-  // Marketplace (#19)
-  getMarketplaceListings: (limit = 50, offset = 0) =>
-    request<MarketplaceListing[]>(`/marketplace/listings?limit=${limit}&offset=${offset}`),
+  // Inventory
+  getInventory: () => request<InventoryItem[]>('/inventory'),
+  getBarnInventory: () => request<BarnData>('/inventory/barn'),
+  sellCrops: (itemType: string, quantity: number) =>
+    request<{ message: string; goldEarned: number }>('/inventory/sell', {
+      method: 'POST', body: JSON.stringify({ itemType, quantity }),
+    }),
+  packCrate: (cropKey: string, crateCount: number) =>
+    request<{ message: string; cratesMade: number; cropsUsed: number }>('/inventory/pack-crate', {
+      method: 'POST', body: JSON.stringify({ cropKey, crateCount }),
+    }),
+  unpackCrate: (cropKey: string, crateCount: number) =>
+    request<{ message: string; cropsRestored: number }>('/inventory/unpack-crate', {
+      method: 'POST', body: JSON.stringify({ cropKey, crateCount }),
+    }),
+
+  // Marketplace (#19 + #74)
+  getMarketplaceListings: (params: {
+    limit?: number; offset?: number;
+    assetType?: 'nft' | 'user_items'; itemType?: string;
+    sortBy?: 'price' | 'createdAt' | 'deadline'; order?: 'ASC' | 'DESC';
+    minPrice?: number; maxPrice?: number;
+  } = {}) => {
+    const { limit = 20, offset = 0, assetType, itemType, sortBy, order, minPrice, maxPrice } = params;
+    const q = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (assetType) q.set('assetType', assetType);
+    if (itemType)  q.set('itemType', itemType);
+    if (sortBy)    q.set('sortBy', sortBy);
+    if (order)     q.set('order', order);
+    if (minPrice != null) q.set('minPrice', String(minPrice));
+    if (maxPrice != null) q.set('maxPrice', String(maxPrice));
+    return request<MarketplaceListingsResponse>(`/marketplace/listings?${q}`);
+  },
   getMyMarketplaceListings: () => request<MarketplaceListing[]>('/marketplace/my-listings'),
+  getMarketplaceNonce: (nftContract: string, tokenId: number) =>
+    request<{ nonce: number }>(`/marketplace/nonce?nftContract=${nftContract}&tokenId=${tokenId}`),
   createMarketplaceListing: (data: {
-    nftContract: string; tokenId: number; priceFarm: number; deadline: string; eip712Sig: string;
+    nftContract: string; tokenId: number; amount?: number; priceFarm: number; deadline: string; eip712Sig: string;
   }) => request<MarketplaceListing>('/marketplace/list', { method: 'POST', body: JSON.stringify(data) }),
   cancelMarketplaceListing: (id: string) =>
     request<{ message: string }>(`/marketplace/cancel/${id}`, { method: 'DELETE' }),
   buyMarketplaceListing: (id: string) =>
-    request<{ message: string; order: object; contractAddress: string }>(`/marketplace/buy/${id}`, { method: 'POST' }),
+    request<{
+      message: string;
+      order: {
+        seller: string; nftContract: string; tokenId: number; amount: number;
+        priceFarm: string; nonce: number; deadline: number; signature: string;
+      };
+      contractAddress: string;
+    }>(`/marketplace/buy/${id}`, { method: 'POST' }),
+  createItemListing: (data: { itemType: string; quantity: number; priceFarm: number; deadline: string }) =>
+    request<MarketplaceListing>('/marketplace/list-item', { method: 'POST', body: JSON.stringify(data) }),
+  buyItemListing: (id: string) =>
+    request<{ message: string; itemType: string; quantity: number }>(`/marketplace/buy/${id}`, { method: 'POST' }),
 
   // Guild
   listGuilds: (limit = 20, offset = 0) =>
@@ -181,13 +316,15 @@ export const api = {
   leaveGuild: () => request<{ message: string }>('/guild/leave', { method: 'DELETE' }),
   disbandGuild: () => request<{ message: string }>('/guild/disband', { method: 'DELETE' }),
   upgradeToElite: () => request<{ message: string }>('/guild/upgrade-elite', { method: 'POST' }),
+  stakeToGuild: (amount: number) =>
+    request<{ message: string; stakedFarm: number; canUpgrade: boolean }>('/guild/stake', { method: 'POST', body: JSON.stringify({ amount }) }),
 
   // Subscriptions
   getSubscriptionStatus: () =>
     request<{ hasButler: boolean; hasCropInsurance: boolean; subscriptions: { type: string; expiresAt: string }[] }>('/subscription/status'),
 
   // Batch actions
-  harvestAll: () => request<{ harvested: number; totalGold: number; message: string; levelUp: boolean; newLevel: number }>('/action/harvest-all', { method: 'POST' }),
+  harvestAll: () => request<{ harvested: number; totalCrops: number; crops: Record<string, number>; message: string; levelUp: boolean; newLevel: number }>('/action/harvest-all', { method: 'POST' }),
   plantAll: (seedId: string) => request<{ planted: number; skipped: number; totalCost: number; message: string }>('/action/plant-all', { method: 'POST', body: JSON.stringify({ seedId }) }),
 
   // Tool actions
