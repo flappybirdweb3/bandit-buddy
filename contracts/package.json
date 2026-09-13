@@ -4,6 +4,7 @@
   "scripts": {
     "compile":          "hardhat compile",
     "test":             "hardhat test",
+    "test:tax":         "hardhat test test/FarmToken.tax.test.ts",
     "test:coverage":    "hardhat coverage",
     "deploy:testnet":   "hardhat run scripts/deploy.ts --network bscTestnet",
     "deploy:mainnet":   "hardhat run scripts/deploy.ts --network bscMainnet",
