@@ -14,8 +14,8 @@ const isInTelegram = typeof window !== 'undefined' && !!(window as any).Telegram
 const WC_METADATA = {
   name: 'Bandit Buddy',
   description: 'Web3 Farming Game on BSC — plant, steal & earn $FARM',
-  url: 'https://flappyx.com',
-  icons: ['https://flappyx.com/favicon.ico'],
+  url: 'https://banditbuddy.xyz',
+  icons: ['https://banditbuddy.xyz/favicon.ico'],
 };
 
 export const wagmiConfig = createConfig({

@@ -817,7 +817,7 @@ export function SettingsModal({ onClose }: Props) {
               right={
                 <button
                   type="button"
-                  onClick={() => WebApp.openTelegramLink('https://t.me/flappyx_official')}
+                  onClick={() => WebApp.openTelegramLink('https://t.me/banditbuddy_official')}
                   className="flex items-center gap-1 glass rounded-xl px-2.5 py-1.5 text-sky-300 text-xs font-bold active:scale-95 transition-all"
                 >
                   Join <ExternalLink size={10} />
@@ -831,7 +831,7 @@ export function SettingsModal({ onClose }: Props) {
               right={
                 <button
                   type="button"
-                  onClick={() => WebApp.openTelegramLink('https://t.me/flappyx_community')}
+                  onClick={() => WebApp.openTelegramLink('https://t.me/banditbuddy_community')}
                   className="flex items-center gap-1 glass rounded-xl px-2.5 py-1.5 text-emerald-300 text-xs font-bold active:scale-95 transition-all"
                 >
                   Chat <ExternalLink size={10} />

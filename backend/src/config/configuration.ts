@@ -20,7 +20,7 @@ export default () => ({
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     botUsername: process.env.TELEGRAM_BOT_USERNAME || 'BanditBuddyBot',
     webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
-    appUrl: process.env.APP_URL || 'https://flappyx.com',
+    appUrl: process.env.APP_URL || 'https://banditbuddy.xyz',
     // Max age of an accepted initData payload (seconds).
     // Telegram Desktop retains initData for days/weeks if the app/tab is left open.
     // Default to 90 days (7,776,000s) to prevent desktop users from being falsely locked out.
