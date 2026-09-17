@@ -17,7 +17,7 @@ async function bootstrap() {
   console.log(`Barn Buddy Backend running on port ${port}`);
 
   // Register Telegram bot webhook (no-op if BOT_TOKEN not set)
-  const appUrl = (process.env.APP_URL || 'https://banditbuddy.xyz').split('?')[0].replace(/\/$/, '');
+  const appUrl = (process.env.APP_URL || 'https://dapp.banditbuddy.xyz').split('?')[0].replace(/\/$/, '');
   const botService = app.get(BotService);
   botService.registerWebhook(`${appUrl}/api/bot/webhook`).catch(() => {});
 }

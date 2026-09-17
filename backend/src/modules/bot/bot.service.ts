@@ -27,7 +27,7 @@ export class BotService {
     this.botToken      = config.get<string>('telegram.botToken') ?? '';
     this.botUsername   = config.get<string>('telegram.botUsername') ?? 'BanditBuddyBot';
     this.webhookSecret = config.get<string>('telegram.webhookSecret') ?? '';
-    this.appUrl        = config.get<string>('telegram.appUrl') ?? 'https://banditbuddy.xyz';
+    this.appUrl        = config.get<string>('telegram.appUrl') ?? 'https://dapp.banditbuddy.xyz';
   }
 
   async handleUpdate(update: any, secret: string): Promise<void> {
