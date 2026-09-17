@@ -1,6 +1,8 @@
 import { Controller, Post, Body, Headers, Logger, HttpCode } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { BotService } from './bot.service';
 
+@SkipThrottle({ steal: true })
 @Controller('bot')
 export class BotController {
   private readonly logger = new Logger(BotController.name);

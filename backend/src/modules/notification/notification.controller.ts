@@ -1,9 +1,11 @@
 import { Controller, Get, Post, Delete, UseGuards, HttpCode } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { NotificationService } from './notification.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '../user/entities/user.entity';
 
+@SkipThrottle({ steal: true })
 @Controller('notification')
 @UseGuards(TelegramAuthGuard)
 export class NotificationController {

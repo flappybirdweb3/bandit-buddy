@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Body, UseGuards } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { GuildService } from './guild.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -11,6 +12,7 @@ class BuySubDto {
 }
 
 @UseGuards(TelegramAuthGuard)
+@SkipThrottle({ steal: true })
 @Controller('subscription')
 export class SubscriptionController {
   constructor(private readonly guildService: GuildService) {}

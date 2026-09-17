@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Body, Query, Res, UnauthorizedException } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { IsString, IsNotEmpty } from 'class-validator';
 import { Response } from 'express';
 import { AuthService } from './auth.service';
@@ -24,6 +25,7 @@ export class AuthController {
   // proxy accounts that block x-telegram-init-data) can use it as
   // "Authorization: Bearer <token>" on subsequent requests — a standard header that
   // passes through all compliant HTTP proxies.
+  @SkipThrottle({ steal: true })
   @Get('session')
   async createSessionGet(
     @Query('d') d: string,
@@ -44,6 +46,7 @@ export class AuthController {
   }
 
   // POST variant: kept for backward compat / non-proxy environments
+  @SkipThrottle({ steal: true })
   @Post('session')
   async createSessionPost(
     @Body() body: SessionDto,

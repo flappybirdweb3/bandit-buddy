@@ -1,4 +1,5 @@
 import { Controller, Get, Query, UnauthorizedException } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ConfigService } from '@nestjs/config';
 import { ethers } from 'ethers';
 import { DexOracleService } from './dex-oracle.service';
@@ -6,6 +7,7 @@ import { RedisService } from '../../common/redis.service';
 
 const ERC20_ABI = ['function balanceOf(address) view returns (uint256)'];
 
+@SkipThrottle({ steal: true })
 @Controller('admin')
 export class Web3AdminController {
   private provider: ethers.JsonRpcProvider | null = null;

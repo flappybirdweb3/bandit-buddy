@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Patch, Body, UseGuards, Query } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { UserService } from './user.service';
 import { Web3Service } from '../web3/web3.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
@@ -12,6 +13,7 @@ class UpdateWalletDto {
   walletAddress: string;
 }
 
+@SkipThrottle({ steal: true })
 @Controller('user')
 @UseGuards(TelegramAuthGuard)
 export class UserController {

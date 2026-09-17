@@ -1,6 +1,7 @@
 import {
   Controller, Get, Post, Delete, Body, Query, UseGuards, ParseIntPipe, DefaultValuePipe, Res,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { GuildService } from './guild.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
@@ -42,6 +43,7 @@ class WaterTreeDto {
 }
 
 @UseGuards(TelegramAuthGuard)
+@SkipThrottle({ steal: true })
 @Controller('guild')
 export class GuildController {
   constructor(private readonly guildService: GuildService) {}

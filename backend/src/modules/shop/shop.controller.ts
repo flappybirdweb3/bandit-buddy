@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Body, UseGuards } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ShopService } from './shop.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -10,6 +11,7 @@ class BuyItemDto {
   itemId: string;
 }
 
+@SkipThrottle({ steal: true })
 @Controller('shop')
 @UseGuards(TelegramAuthGuard)
 export class ShopController {

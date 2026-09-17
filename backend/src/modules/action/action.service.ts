@@ -576,7 +576,7 @@ export class ActionService {
     // ── Critical transaction ──────────────────────────────────────
     const qr = this.dataSource.createQueryRunner();
     await qr.connect();
-    await qr.startTransaction('SERIALIZABLE');
+    await qr.startTransaction(); // READ COMMITTED + pessimistic_write locks are sufficient
     try {
       // Lock the target plot first (prevents race on the same crop)
       const plot = await qr.manager
@@ -926,7 +926,6 @@ export class ActionService {
       const [plot, user] = await Promise.all([
         qr.manager
           .createQueryBuilder(FarmPlot, 'p')
-          .leftJoinAndSelect('p.seed', 'seed')
           .where('p.id = :id', { id: plotId })
           .setLock('pessimistic_write')
           .getOne(),
@@ -942,6 +941,10 @@ export class ActionService {
       if (!plot.seedId || !plot.harvestableAt || !plot.plantedAt)
         throw new BadRequestException('Plot has no growing crop');
 
+      // seed_configs is immutable static data — load outside the FOR UPDATE lock to avoid
+      // "FOR UPDATE cannot be applied to the nullable side of an outer join" (PostgreSQL)
+      const seedConfig = await this.seedRepo.findOneBy({ id: plot.seedId });
+
       isHelpingNeighbor = plot.userId !== userId;
       plotOwnerId = plot.userId;
       helperUsername = user.username ?? 'Someone';
@@ -956,7 +959,7 @@ export class ActionService {
       if (user.energy < WATER_ENERGY_COST)
         throw new BadRequestException(`Need ${WATER_ENERGY_COST} ⚡ to water. Have ${user.energy}`);
 
-      const growTimeSec = plot.seed?.growTimeSec ?? 0;
+      const growTimeSec = seedConfig?.growTimeSec ?? 0;
       const dryThreshold = plot.plantedAt.getTime() + growTimeSec * 500;
       isDry = now >= dryThreshold;
 

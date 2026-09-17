@@ -8,6 +8,9 @@ import { User } from '../user/entities/user.entity';
 import { PlantDto, HarvestDto, StealDto, PlotIdDto, ThrowAttackDto, FertilizeDto, RevealThiefDto, RepairDto } from './dto/action.dto';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
 
+// Class-level skip: non-steal methods are exempt from the 3/sec steal throttler.
+// The steal endpoint's @Throttle({ steal: {...} }) overrides this at the method level.
+@SkipThrottle({ steal: true })
 @Controller('action')
 @UseGuards(TelegramAuthGuard)
 export class ActionController {
@@ -37,6 +40,7 @@ export class ActionController {
   // Strict rate limit: 3 steal attempts per second per user.
   // The 'steal' named throttler (ttl:1000, limit:3) is defined in app.module.ts.
   // Do NOT add @SkipThrottle() here — steal is exactly the endpoint bots abuse.
+  @SkipThrottle({ steal: false })  // override class @SkipThrottle({ steal: true }) → re-enable steal throttler
   @Throttle({ steal: { limit: 3, ttl: 1000 } })
   @Post('steal')
   async steal(@CurrentUser() user: User, @Body() dto: StealDto) {

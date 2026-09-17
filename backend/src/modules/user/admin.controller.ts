@@ -11,7 +11,7 @@ import { User } from './entities/user.entity';
 import { FarmPlot } from '../farm/entities/farm-plot.entity';
 import { StealLog } from '../farm/entities/steal-log.entity';
 import { SeedConfig } from '../farm/entities/seed-config.entity';
-import { Throttle } from '@nestjs/throttler';
+import { Throttle, SkipThrottle } from '@nestjs/throttler';
 
 const ORACLE_LOW_BNB   = 0.05;   // red alert
 const ORACLE_WARN_BNB  = 0.10;   // yellow warning
@@ -21,6 +21,7 @@ function requireAdmin(passcode: string | undefined, expected: string): void {
   if (!expected || passcode !== expected) throw new UnauthorizedException('Invalid admin passcode');
 }
 
+@SkipThrottle({ steal: true })
 @Controller('admin')
 export class AdminController {
   private readonly logger = new Logger(AdminController.name);

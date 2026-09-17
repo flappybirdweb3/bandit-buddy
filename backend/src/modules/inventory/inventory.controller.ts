@@ -1,10 +1,12 @@
 import { Controller, Get, Post, Body, UseGuards } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { InventoryService } from './inventory.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '../user/entities/user.entity';
 import { SellCropsDto, PackCrateDto, UnpackCrateDto } from './dto/inventory.dto';
 
+@SkipThrottle({ steal: true })
 @Controller('inventory')
 @UseGuards(TelegramAuthGuard)
 export class InventoryController {

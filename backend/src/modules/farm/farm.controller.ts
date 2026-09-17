@@ -1,9 +1,11 @@
 import { Controller, Get, Post, Body, Param, ParseUUIDPipe, UseGuards } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { FarmService } from './farm.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '../user/entities/user.entity';
 
+@SkipThrottle({ steal: true })
 @Controller('farm')
 @UseGuards(TelegramAuthGuard)
 export class FarmController {

@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 import { APP_GUARD } from '@nestjs/core';
 import configuration from './config/configuration';
 import { DatabaseModule } from './database/database.module';
@@ -33,8 +34,12 @@ import { AuthModule } from './modules/auth/auth.module';
       {
         name: 'global',
         ttl: 60000,
-        limit: 100,
+        limit: 600,
       },
+      // steal throttler: applied only to @Post('steal') via @Throttle({ steal: {...} }).
+      // All other routes must carry @SkipThrottle({ steal: true }) at the class level
+      // to avoid inheriting this 3/sec bucket — without the class-level skip, every
+      // endpoint from the same IP/userId would share this strict budget.
       {
         name: 'steal',
         ttl: 1000,
@@ -65,7 +70,7 @@ import { AuthModule } from './modules/auth/auth.module';
     // metadata but no guard runs — rate limiting is silently disabled.
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: UserThrottlerGuard,
     },
   ],
 })

@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Patch, Body, Param, Query, ParseIntPipe, UseGuards } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { Web3Service } from './web3.service';
 import { DexVolumeService } from './dex-volume.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
@@ -9,6 +10,7 @@ import { ClaimSignatureDto, RefundClaimDto, TokenizeDogDto, RollbackTokenizeDogD
 import { FusionOracleService } from './fusion-oracle.service';
 import { TreasuryMonitorService } from './treasury-monitor.service';
 
+@SkipThrottle({ steal: true })
 @Controller('web3')
 @UseGuards(TelegramAuthGuard)
 export class Web3Controller {

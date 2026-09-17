@@ -1,12 +1,14 @@
 import {
   Controller, Get, Post, Delete, Body, Param, UseGuards, Query, ParseIntPipe,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { MarketplaceService } from './marketplace.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '../user/entities/user.entity';
 import { CreateListingDto, CreateItemListingDto, GetListingsQueryDto } from './dto/marketplace.dto';
 
+@SkipThrottle({ steal: true })
 @Controller('marketplace')
 @UseGuards(TelegramAuthGuard)
 export class MarketplaceController {
