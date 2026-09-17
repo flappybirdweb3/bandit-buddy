@@ -3,11 +3,30 @@ import { X, Bell, BellOff, Swords, Swords as RevengeIcon } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import { eventBus } from '@/game/EventBus';
+import { soundManager } from '@/sounds/SoundManager';
 import type { InAppNotification, NotifType, ActivityEntry } from '@/types/game.types';
 
 interface Props { onClose: () => void }
 
 type Tab = 'inbox' | 'raids';
+
+function triggerSelection() {
+  try {
+    (window as any).Telegram?.WebApp?.HapticFeedback?.selectionChanged?.();
+  } catch {}
+}
+
+function triggerLight() {
+  try {
+    (window as any).Telegram?.WebApp?.HapticFeedback?.impactOccurred?.('light');
+  } catch {}
+}
+
+function triggerSuccess() {
+  try {
+    (window as any).Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success');
+  } catch {}
+}
 
 // ── Notifications ────────────────────────────────────────────────
 const NOTIF_ICON: Record<NotifType, string> = {
@@ -18,6 +37,7 @@ const NOTIF_ICON: Record<NotifType, string> = {
   referral_joined: '🎉',
   daily_reminder:  '🔥',
   attack_victim:   '☣️',
+  help_received:   '🤝',
 };
 
 const NOTIF_COLOR: Record<NotifType, string> = {
@@ -28,6 +48,7 @@ const NOTIF_COLOR: Record<NotifType, string> = {
   referral_joined: 'bg-violet-500/15 border-violet-400/25',
   daily_reminder:  'bg-orange-500/15 border-orange-400/25',
   attack_victim:   'bg-lime-500/15 border-lime-400/25',
+  help_received:   'bg-blue-500/15 border-blue-400/25',
 };
 
 function timeAgo(dateStr: string) {
@@ -47,7 +68,9 @@ function NotifCard({ item, onClose }: { item: InAppNotification; onClose: () => 
 
   const handleRevenge = () => {
     if (!item.actorUserId || !item.actorUsername) return;
-    eventBus.emit('visit-farm', { userId: item.actorUserId, username: item.actorUsername });
+    triggerLight();
+    soundManager.play('attack');
+    eventBus.emit('visit-farm', { userId: item.actorUserId, username: item.actorUsername, isRevenge: true });
     onClose();
   };
 
@@ -67,9 +90,9 @@ function NotifCard({ item, onClose }: { item: InAppNotification; onClose: () => 
         {canRevenge && (
           <button
             onClick={handleRevenge}
-            className="mt-2 flex items-center gap-1.5 glass-red rounded-xl px-2.5 py-1 text-red-300 text-[11px] font-bold active:scale-95 transition-all"
+            className="mt-2 flex items-center gap-1.5 glass-red rounded-xl px-4 py-2 text-red-300 text-xs font-bold active:scale-95 transition-all"
           >
-            <RevengeIcon size={10} /> Raid Back
+            <RevengeIcon size={12} /> Raid Back
           </button>
         )}
       </div>
@@ -118,8 +141,12 @@ function ActivityCard({ entry, onReveal }: { entry: ActivityEntry; onReveal?: (i
         )}
         {showReveal && onReveal && (
           <button
-            onClick={() => onReveal(entry.id)}
-            className="mt-2 text-[10px] font-bold text-amber-400 border border-amber-400/40 rounded-lg px-2 py-0.5 hover:bg-amber-400/10 transition-colors"
+            onClick={() => {
+              triggerLight();
+              soundManager.play('coin');
+              onReveal(entry.id);
+            }}
+            className="mt-2 text-[10px] font-bold text-amber-400 border border-amber-400/40 rounded-lg px-2.5 py-1 hover:bg-amber-400/10 active:scale-95 transition-all"
           >
             🔍 Reveal Thief (1 Magnifying Glass)
           </button>
@@ -137,7 +164,7 @@ function RaidStats({ entries }: { entries: ActivityEntry[] }) {
   const totalLost     = entries.filter((e) => e.role === 'defender' && e.success).reduce((s, e) => s + e.amount, 0);
 
   return (
-    <div className="grid grid-cols-4 gap-1.5 mx-5 mb-3">
+    <div className="grid grid-cols-4 gap-1.5 mx-5 mb-3 flex-shrink-0">
       {[
         { label: 'Raids Won',  value: won,  color: 'text-green-400' },
         { label: 'Raids Lost', value: lost, color: 'text-red-400'   },
@@ -159,6 +186,12 @@ export function NotificationModal({ onClose }: Props) {
   const [revealResult, setRevealResult] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
+  const handleClose = () => {
+    triggerLight();
+    soundManager.play('click');
+    onClose();
+  };
+
   const { data: inbox, isLoading: inboxLoading } = useQuery({
     queryKey: ['inbox'],
     queryFn: api.getInbox,
@@ -176,6 +209,7 @@ export function NotificationModal({ onClose }: Props) {
   const revealMutation = useMutation({
     mutationFn: (stealLogId: string) => api.revealThief(stealLogId),
     onSuccess: (data) => {
+      triggerSuccess();
       setRevealResult(`🔍 Thief revealed: @${data.thiefUsername} — stole ${data.stolenAmount.toFixed(2)} GOLD`);
       queryClient.invalidateQueries({ queryKey: ['activity'] });
     },
@@ -204,21 +238,26 @@ export function NotificationModal({ onClose }: Props) {
   const unread = inbox?.unreadCount ?? 0;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-end justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+    <div className="fixed inset-0 z-[100] flex flex-col justify-end" onClick={handleClose}>
+      <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
       <div
-        className="relative w-full max-w-md glass rounded-t-3xl slide-up flex flex-col"
-        style={{ maxHeight: '82vh' }}
+        className="relative w-full max-w-xl bg-zinc-950/95 backdrop-blur-2xl border-t border-white/10 mx-auto rounded-t-3xl overflow-hidden slide-up flex flex-col shadow-2xl"
+        style={{
+          maxHeight: 'min(90vh, 800px)',
+          paddingBottom: 'max(16px, var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 16px)))'
+        }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="w-10 h-1 bg-white/20 rounded-full mx-auto mt-3 flex-shrink-0" />
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 pt-4 pb-3 flex-shrink-0">
-          <div className="flex items-center gap-2">
-            <Bell size={18} className="text-violet-400" />
+        <div className="flex items-center justify-between px-5 pt-3 pb-2.5 flex-shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-violet-500/15 border border-violet-400/25 flex items-center justify-center text-violet-400">
+              <Bell size={16} />
+            </div>
             <div>
-              <h2 className="text-white font-black text-base leading-none">Activity</h2>
+              <h2 className="text-white font-black text-base leading-tight">Activity</h2>
               <p className="text-white/40 text-xs">
                 {tab === 'inbox'
                   ? unread > 0 ? `${unread} unread` : 'All caught up!'
@@ -229,23 +268,34 @@ export function NotificationModal({ onClose }: Props) {
           <div className="flex items-center gap-2">
             {tab === 'inbox' && unread > 0 && (
               <button
-                onClick={() => markRead()}
-                className="glass text-white/50 text-xs px-3 py-1.5 rounded-xl active:scale-95 transition-all"
+                onClick={() => {
+                  triggerLight();
+                  soundManager.play('click');
+                  markRead();
+                }}
+                className="glass text-white/70 hover:text-white text-xs px-3 py-1.5 rounded-xl active:scale-95 transition-all"
               >
                 Mark read
               </button>
             )}
             {tab === 'inbox' && items.length > 0 && (
               <button
-                onClick={() => clearAll()}
+                onClick={() => {
+                  triggerLight();
+                  soundManager.play('click');
+                  clearAll();
+                }}
                 disabled={clearing}
-                className="glass text-red-400/70 text-xs px-3 py-1.5 rounded-xl active:scale-95 transition-all disabled:opacity-40"
+                className="glass text-red-400/80 hover:text-red-300 text-xs px-3 py-1.5 rounded-xl active:scale-95 transition-all disabled:opacity-40"
               >
                 Clear all
               </button>
             )}
-            <button onClick={onClose} className="glass rounded-full p-2 text-white/60 hover:text-white active:scale-90 transition-all">
-              <X size={16} />
+            <button
+              onClick={handleClose}
+              className="w-8 h-8 rounded-full glass border border-white/10 flex items-center justify-center text-white/60 hover:text-white active:scale-90 transition-all"
+            >
+              <X size={15} />
             </button>
           </div>
         </div>
@@ -254,9 +304,13 @@ export function NotificationModal({ onClose }: Props) {
         <div className="flex-shrink-0 px-5 mb-3">
           <div className="glass rounded-2xl flex p-1 gap-1">
             <button
-              onClick={() => setTab('inbox')}
+              onClick={() => {
+                triggerSelection();
+                soundManager.play('click');
+                setTab('inbox');
+              }}
               className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-bold transition-all ${
-                tab === 'inbox' ? 'bg-white/15 text-white' : 'text-white/40'
+                tab === 'inbox' ? 'bg-white/15 text-white shadow-sm' : 'text-white/40 hover:text-white/70'
               }`}
             >
               <Bell size={12} />
@@ -268,9 +322,13 @@ export function NotificationModal({ onClose }: Props) {
               )}
             </button>
             <button
-              onClick={() => setTab('raids')}
+              onClick={() => {
+                triggerSelection();
+                soundManager.play('click');
+                setTab('raids');
+              }}
               className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-bold transition-all ${
-                tab === 'raids' ? 'bg-white/15 text-white' : 'text-white/40'
+                tab === 'raids' ? 'bg-white/15 text-white shadow-sm' : 'text-white/40 hover:text-white/70'
               }`}
             >
               <Swords size={12} />
@@ -284,8 +342,15 @@ export function NotificationModal({ onClose }: Props) {
           <RaidStats entries={activity} />
         )}
 
+        {/* Reveal Result Notice */}
+        {tab === 'raids' && revealResult && (
+          <div className="mx-5 mb-2.5 rounded-xl bg-amber-500/10 border border-amber-400/30 px-3 py-2 text-xs text-amber-300 flex-shrink-0">
+            {revealResult}
+          </div>
+        )}
+
         {/* List */}
-        <div className="overflow-y-auto flex-1 px-5 pb-8 flex flex-col gap-2.5">
+        <div className="overflow-y-auto flex-1 px-5 pb-4 flex flex-col gap-2.5">
 
           {/* ── Inbox tab ── */}
           {tab === 'inbox' && (
@@ -298,7 +363,7 @@ export function NotificationModal({ onClose }: Props) {
                   <p className="text-white/20 text-xs">Play, harvest, and raid to get started!</p>
                 </div>
               )}
-              {items.map((item) => <NotifCard key={item.id} item={item} onClose={onClose} />)}
+              {items.map((item) => <NotifCard key={item.id} item={item} onClose={handleClose} />)}
             </>
           )}
 
@@ -311,11 +376,6 @@ export function NotificationModal({ onClose }: Props) {
                   <Swords size={36} className="text-white/20" />
                   <p className="text-white/30 text-sm">No raid history yet.</p>
                   <p className="text-white/20 text-xs">Go steal some crops! 🥷</p>
-                </div>
-              )}
-              {revealResult && (
-                <div className="mx-5 mb-3 rounded-xl bg-amber-500/10 border border-amber-400/30 px-3 py-2 text-xs text-amber-300">
-                  {revealResult}
                 </div>
               )}
               {activity.map((e) => (

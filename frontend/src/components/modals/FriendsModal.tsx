@@ -3,12 +3,14 @@ import { SEED_EMOJI } from "@/constants/seeds";
 import {
   X, Wheat, UserPlus, ArrowLeft, Copy, Share2,
   Users, Coins, Search, Loader2, Sword, DoorOpen, Zap,
+  ShieldAlert, ShieldCheck,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import WebApp from '@twa-dev/sdk';
 import { api } from '@/api/client';
 import { eventBus } from '@/game/EventBus';
 import { RaccoonMascot } from '@/components/mascot/RaccoonMascot';
+import { ReferralScreen } from './ReferralScreen';
 import type { FarmData } from '@/types/game.types';
 
 interface Props { onClose: () => void }
@@ -40,8 +42,11 @@ export function FriendsModal({ onClose }: Props) {
 
   const stealableCount = friends.filter((f) => f.isStealable).length;
 
-  const handleVisit = (userId: string, username: string) => {
+  const handleVisit = (userId: string, username: string, autoSteal = false) => {
     eventBus.emit('visit-farm', { userId, username });
+    if (autoSteal) {
+      eventBus.emit('tool-changed', 'steal');
+    }
     onClose();
   };
 
@@ -64,17 +69,17 @@ export function FriendsModal({ onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-end justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-[100] flex flex-col justify-end px-7 py-2" style={{ paddingBottom: 'calc(var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 32px)) + 100px)' }} onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
-        className="relative w-full max-w-md glass rounded-t-3xl slide-up flex flex-col"
-        style={{ maxHeight: '88vh' }}
+        className="relative w-full max-w-2xl glass mx-auto rounded-3xl overflow-hidden slide-up flex flex-col"
+        style={{ maxHeight: 'calc(var(--tg-viewport-stable-height, 100vh) - 120px)' }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="w-10 h-1 bg-white/20 rounded-full mx-auto mt-3 flex-shrink-0" />
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 pt-4 pb-3 flex-shrink-0">
+ <div className="flex items-center justify-between px-5 pt-4 pb-3 flex-shrink-0">
           <div className="flex items-center gap-2">
             {selected && (
               <button onClick={() => setSelected(null)} className="glass rounded-full p-1.5 text-white/60 hover:text-white active:scale-90 mr-1">
@@ -107,7 +112,7 @@ export function FriendsModal({ onClose }: Props) {
         {!selected ? (
           <>
             {/* Tab bar */}
-            <div className="flex-shrink-0 px-5 mb-3">
+ <div className="flex-shrink-0 px-5 mb-3">
               <div className="glass rounded-2xl flex p-1">
                 <TabBtn active={tab === 'raid'} onClick={() => setTab('raid')} red={stealableCount > 0}>
                   <Sword size={12} />
@@ -127,7 +132,7 @@ export function FriendsModal({ onClose }: Props) {
               </div>
             </div>
 
-            <div className="overflow-y-auto flex-1 px-5 pb-8">
+ <div className="overflow-y-auto flex-1 px-5 pb-8">
               {tab === 'raid' && (
                 <RaidTab
                   friends={friends}
@@ -147,9 +152,9 @@ export function FriendsModal({ onClose }: Props) {
                 />
               )}
               {tab === 'invite' && (
-                <InviteTab
+                <ReferralScreen
                   referral={referral}
-                  loading={loadingReferral}
+                  isLoading={loadingReferral}
                   copied={copied}
                   onCopy={handleCopy}
                   onShare={handleShare}
@@ -158,12 +163,12 @@ export function FriendsModal({ onClose }: Props) {
             </div>
           </>
         ) : (
-          <div className="overflow-y-auto flex-1 px-5 pb-8">
+ <div className="overflow-y-auto flex-1 px-5 pb-8">
             <FarmPreview
               farm={farm}
               loading={loadingFarm}
               username={selected.name}
-              onVisit={() => handleVisit(selected.id, selected.name)}
+              onVisit={(autoSteal) => handleVisit(selected.id, selected.name, autoSteal)}
             />
           </div>
         )}
@@ -195,7 +200,7 @@ function RaidTab({ friends, loading, onSelect, onVisit, onInvite }: {
   friends: { userId: string; username: string; hasRipeCrops: boolean; isStealable: boolean; connection: 'invited' | 'invited_by' }[];
   loading: boolean;
   onSelect: (id: string, name: string) => void;
-  onVisit: (id: string, name: string) => void;
+  onVisit: (id: string, name: string, autoSteal?: boolean) => void;
   onInvite: () => void;
 }) {
   const { data: exploreFarms = [], isLoading: loadingExplore } = useQuery({
@@ -245,7 +250,7 @@ function RaidTab({ friends, loading, onSelect, onVisit, onInvite }: {
               username={f.username}
               tag="neighbor"
               onPreview={() => onSelect(f.userId, f.username)}
-              onRaid={() => onVisit(f.userId, f.username)}
+              onRaid={() => onVisit(f.userId, f.username, true)}
             />
           ))}
         </>
@@ -263,7 +268,7 @@ function RaidTab({ friends, loading, onSelect, onVisit, onInvite }: {
               ripePlots={f.ripePlots}
               tag="farm"
               onPreview={() => onSelect(f.userId, f.username)}
-              onRaid={() => onVisit(f.userId, f.username)}
+              onRaid={() => onVisit(f.userId, f.username, true)}
             />
           ))}
         </>
@@ -352,7 +357,7 @@ function NeighborsList({ friends, loading, onSelect, onVisit, onInvite }: {
   friends: { userId: string; username: string; hasRipeCrops: boolean; isStealable: boolean; connection: 'invited' | 'invited_by' }[];
   loading: boolean;
   onSelect: (id: string, name: string) => void;
-  onVisit: (id: string, name: string) => void;
+  onVisit: (id: string, name: string, autoSteal?: boolean) => void;
   onInvite: () => void;
 }) {
   const [query, setQuery] = useState('');
@@ -406,7 +411,7 @@ function NeighborsList({ friends, loading, onSelect, onVisit, onInvite }: {
             <NeighborRow key={u.userId} userId={u.userId} username={u.username}
               hasRipeCrops={false} isStealable={false} connection={null}
               onView={() => onSelect(u.userId, u.username)}
-              onVisit={() => onVisit(u.userId, u.username)} />
+              onVisit={(autoSteal) => onVisit(u.userId, u.username, autoSteal)} />
           ))}
         </div>
       ) : (
@@ -423,7 +428,7 @@ function NeighborsList({ friends, loading, onSelect, onVisit, onInvite }: {
                 hasRipeCrops={f.hasRipeCrops} isStealable={f.isStealable}
                 connection={f.connection}
                 onView={() => onSelect(f.userId, f.username)}
-                onVisit={() => onVisit(f.userId, f.username)} />
+                onVisit={(autoSteal) => onVisit(f.userId, f.username, autoSteal)} />
             ))
           )}
           <button
@@ -442,7 +447,7 @@ function NeighborsList({ friends, loading, onSelect, onVisit, onInvite }: {
 function NeighborRow({ userId, username, hasRipeCrops, isStealable, connection, onView, onVisit }: {
   userId: string; username: string; hasRipeCrops: boolean; isStealable: boolean;
   connection: 'invited' | 'invited_by' | null;
-  onView: () => void; onVisit: () => void;
+  onView: () => void; onVisit: (autoSteal?: boolean) => void;
 }) {
   const initial = (username[0] ?? '?').toUpperCase();
   return (
@@ -450,9 +455,9 @@ function NeighborRow({ userId, username, hasRipeCrops, isStealable, connection, 
       <div className={[
         'w-10 h-10 rounded-full flex items-center justify-center text-white font-bold flex-shrink-0',
         isStealable
-          ? 'bg-gradient-to-br from-red-500 to-rose-700'
+          ? 'bg-gradient-to-br from-red-500 to-rose-700 shadow-[0_0_8px_rgba(239,68,68,0.4)]'
           : 'bg-gradient-to-br from-violet-500 to-purple-700',
-      ].join(' ')}>
+      ].join(' ')} style={{ marginLeft: '10px' }}>
         {initial}
       </div>
       <div className="flex-1 min-w-0">
@@ -465,20 +470,23 @@ function NeighborRow({ userId, username, hasRipeCrops, isStealable, connection, 
               {connection === 'invited_by' ? '👑 Invited you' : '✉️ You invited'}
             </span>
           )}
-          {isStealable
-            ? <span className="text-red-300 text-[10px] font-semibold flex items-center gap-0.5"><Wheat size={9} /> Stealable crops!</span>
-            : hasRipeCrops
-              ? <span className="text-amber-400 text-[10px]">Ripe (no steal cap left)</span>
-              : <span className="text-white/25 text-[10px]">Nothing to steal</span>
-          }
+          {connection ? (
+            isStealable
+              ? <span className="text-red-300 text-[10px] font-semibold flex items-center gap-0.5"><Wheat size={9} /> Stealable crops!</span>
+              : hasRipeCrops
+                ? <span className="text-amber-400 text-[10px]">Ripe (no steal cap left)</span>
+                : <span className="text-white/25 text-[10px]">Nothing to steal</span>
+          ) : (
+            <span className="text-white/40 text-[10px]">Tap View to scout crops</span>
+          )}
         </div>
       </div>
-      <div className="flex gap-1.5 flex-shrink-0">
+      <div className="flex gap-1.5 flex-shrink-0" style={{ marginRight: '10px' }}>
         <button onClick={onView} className="glass text-white/60 text-xs font-semibold px-2.5 py-1.5 rounded-xl active:scale-90 transition-all">
           View
         </button>
         <button
-          onClick={onVisit}
+          onClick={() => onVisit(isStealable)}
           className={`text-xs font-black px-2.5 py-1.5 rounded-xl active:scale-90 transition-all ${
             isStealable
               ? 'bg-gradient-to-r from-red-600 to-rose-500 text-white shadow-[0_2px_8px_rgba(239,68,68,0.35)]'
@@ -498,6 +506,8 @@ function InviteTab({ referral, loading, copied, onCopy, onShare }: {
   loading: boolean; copied: boolean; onCopy: () => void; onShare: () => void;
 }) {
   if (loading) return <Loading text="Loading…" />;
+
+  const bonus = referral?.bonusPerReferral ?? 120;
 
   return (
     <div className="flex flex-col gap-3">
@@ -525,7 +535,7 @@ function InviteTab({ referral, loading, copied, onCopy, onShare }: {
       </div>
 
       <div className="glass rounded-2xl p-3 text-center text-sm text-white/60">
-        You earn <span className="text-amber-300 font-bold">{referral?.bonusPerReferral ?? 25}G</span> · friend gets <span className="text-green-300 font-bold">{referral?.bonusPerReferral ?? 25}G</span> welcome bonus
+        You earn <span className="text-amber-300 font-bold">{bonus}G</span> · friend gets <span className="text-green-300 font-bold">{bonus}G</span> welcome bonus
       </div>
 
       {/* Link */}
@@ -559,7 +569,7 @@ function InviteTab({ referral, loading, copied, onCopy, onShare }: {
 
 // ─── Farm preview (when player is selected) ──────────────────────
 function FarmPreview({ farm, loading, username, onVisit }: {
-  farm?: FarmData; loading: boolean; username: string; onVisit: () => void;
+  farm?: FarmData; loading: boolean; username: string; onVisit: (autoSteal?: boolean) => void;
 }) {
   if (loading) return <Loading text={`Scouting @${username}'s farm…`} />;
 
@@ -568,7 +578,7 @@ function FarmPreview({ farm, loading, username, onVisit }: {
   const hasTarget = ripePlots.length > 0;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3.5">
       {/* Intel banner */}
       {hasTarget ? (
         <div className="rounded-2xl p-4 flex items-start gap-3"
@@ -588,6 +598,37 @@ function FarmPreview({ farm, loading, username, onVisit }: {
           <div className="text-2xl mb-1">😴</div>
           <p className="text-white/50 text-sm">No stealable crops right now</p>
           <p className="text-white/25 text-xs mt-0.5">Come back when their crops ripen</p>
+        </div>
+      )}
+
+      {/* Guard Dog Defense Intel */}
+      {farm?.hasGuardDog ? (
+        <div className="rounded-2xl p-3 flex items-center gap-3 bg-amber-500/10 border border-amber-500/25">
+          <div className="w-8 h-8 rounded-xl bg-amber-500/20 flex items-center justify-center text-amber-400 flex-shrink-0">
+            <ShieldAlert size={16} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-amber-300 font-bold text-xs">
+              🐕 {farm.guardDogType ?? 'Guard Dog'} on Duty ({farm.guardDogDefense}% DEF)
+            </p>
+            <p className="text-white/40 text-[10px] mt-0.5">
+              Guard dogs reduce steal success chance
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-2xl p-3 flex items-center gap-3 bg-green-500/10 border border-green-500/20">
+          <div className="w-8 h-8 rounded-xl bg-green-500/20 flex items-center justify-center text-green-400 flex-shrink-0">
+            <ShieldCheck size={16} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-green-300 font-bold text-xs">
+              🛡️ No Guard Dog Active
+            </p>
+            <p className="text-white/40 text-[10px] mt-0.5">
+              Unprotected farm — highest raid success chance
+            </p>
+          </div>
         </div>
       )}
 
@@ -627,15 +668,14 @@ function FarmPreview({ farm, loading, username, onVisit }: {
 
       {/* CTA */}
       <button
-        onClick={onVisit}
-        className={`w-full py-4 rounded-2xl font-black text-sm active:scale-95 transition-all flex items-center justify-center gap-2 ${
+        onClick={() => onVisit(hasTarget)}
+        className={`w-full py-3.5 rounded-2xl font-black text-sm active:scale-95 transition-all flex items-center justify-center gap-2 ${
           hasTarget
-            ? 'text-white'
-            : 'glass text-white/70'
+            ? 'text-white shadow-[0_4px_24px_rgba(220,38,38,0.45)]'
+            : 'glass text-white/70 hover:text-white'
         }`}
         style={hasTarget ? {
           background: 'linear-gradient(135deg, #dc2626 0%, #e11d48 100%)',
-          boxShadow: '0 4px 24px rgba(220,38,38,0.45)',
         } : {}}
       >
         {hasTarget
@@ -645,8 +685,8 @@ function FarmPreview({ farm, loading, username, onVisit }: {
       </button>
 
       {hasTarget && (
-        <p className="text-white/25 text-[10px] text-center -mt-2">
-          You'll enter stealth mode — use the 🦝 Steal tool on ripe crops
+        <p className="text-white/30 text-[10px] text-center -mt-1">
+          Auto-equips 🦝 Steal tool — tap ripe plots to raid
         </p>
       )}
     </div>

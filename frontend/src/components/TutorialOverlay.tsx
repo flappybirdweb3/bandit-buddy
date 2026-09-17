@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { ChevronRight, X } from 'lucide-react';
-import { RaccoonMascot } from '@/components/mascot/RaccoonMascot';
+import { ChevronRight, ChevronLeft, X } from 'lucide-react';
+import { soundManager } from '@/sounds/SoundManager';
 
 export const TUTORIAL_KEY = 'bb_tutorial_done';
 
@@ -9,9 +9,10 @@ interface Step {
   emoji: string;
   title: string;
   body: string;
-  hint?: string;           // small directional hint text
-  cardPos: 'center' | 'top' | 'bottom';
-  highlight?: 'hud' | 'farm' | 'tools' | 'neighbors';
+  badge?: string;
+  hint?: string;
+  cardPos: 'center' | 'below-hud' | 'above-tools';
+  highlight?: 'hud' | 'farm' | 'tools' | 'explore';
   showMascot?: boolean;
   isFinal?: boolean;
 }
@@ -19,47 +20,53 @@ interface Step {
 const STEPS: Step[] = [
   {
     emoji: '🦝',
+    badge: 'Introduction',
     title: 'Welcome to Bandit Buddy!',
-    body: "You're a bandit farmer on BSC. Plant crops, steal from neighbors, and earn $FARM tokens.",
+    body: "You are a Bandit Farmer on BNB Smart Chain. Plant crops, protect your farm, raid neighbors for gold, and harvest on-chain rewards!",
     cardPos: 'center',
     showMascot: true,
   },
   {
     emoji: '💰',
-    title: 'GOLD & Energy',
-    body: "Your GOLD balance and ⚡ energy live up here. GOLD is your currency. Energy limits steals — it regens 10 per hour.",
-    cardPos: 'top',
-    hint: '👆 tap here to see stats',
+    badge: 'Resource Management',
+    title: 'GOLD & Energy Bar',
+    body: "Your GOLD balance and ⚡ Energy are tracked in the top HUD. Gold buys seeds, tools & plot expansions. Energy powers farm tasks and raids (regens +10/hr).",
+    cardPos: 'below-hud',
+    hint: 'Overview of your top status bar',
     highlight: 'hud',
   },
   {
     emoji: '🌱',
-    title: 'Plant Your First Crop',
-    body: "Select the 🌱 Seed tool, then tap any empty plot on your farm. Wheat matures in just 5 minutes!",
-    cardPos: 'bottom',
-    hint: '👆 your farm plots',
+    badge: 'Farming Basics',
+    title: 'Planting Your Crops',
+    body: "Select the 🌱 Plant tool from your dock, then tap any empty soil plot to choose seeds. Your starter crop Turnip is ready to plant from Level 0!",
+    cardPos: 'center',
+    hint: 'Tap empty plots with Plant tool active',
     highlight: 'farm',
   },
   {
     emoji: '🛠️',
-    title: 'Farm Tools',
-    body: "🌱 Seed = plant  ·  💧 Water = speed up  ·  ⛏️ Dig = remove  ·  🌿 Spray = boost yield  ·  🦝 Steal = raid neighbors",
-    cardPos: 'bottom',
-    hint: '👇 tool dock',
+    badge: 'Farm Equipment',
+    title: '7 Farming Dock Tools',
+    body: "👆 Select (inspect) · ⛏️ Dig (clear) · 🌱 Plant (sow seeds) · 💧 Water (moisten dry soil) · 🐛 Bug Spray (cure pests) · ✂️ Weed Kill (pull weeds) · 🦝 Steal (raid crops).",
+    cardPos: 'above-tools',
+    hint: 'Bottom tool dock at your fingertips',
     highlight: 'tools',
   },
   {
-    emoji: '🦝',
-    title: 'Steal From Neighbors',
-    body: "Open NEIGHBORS to find farms with ripe crops 🌾. Visit their farm, switch to the Steal tool, and tap their plots to raid. Each hit steals 5% of their crop!",
-    cardPos: 'bottom',
-    hint: '👆 FriendsBar above',
-    highlight: 'neighbors',
+    emoji: '🌐',
+    badge: 'Social & Raiding',
+    title: 'Explore & Raid Farms',
+    body: "Tap 🌐 Explore to discover farms with ripe crops across the world, or check 👥 NEIGHBORS. Equip the 🦝 Steal tool and tap ripe plots to take up to 20% of their harvest!",
+    cardPos: 'above-tools',
+    hint: 'Explore feature & Neighbors bar',
+    highlight: 'explore',
   },
   {
     emoji: '🏆',
+    badge: 'Ready to Play',
     title: "You're Ready, Bandit!",
-    body: "Farm daily, steal often, claim $FARM tokens on-chain, and climb the leaderboard. Good luck 🦝",
+    body: "Tend your farm daily, complete quests, help allies for trust score, raid rivals, and claim $FARM tokens. Happy farming! 🦝",
     cardPos: 'center',
     isFinal: true,
   },
@@ -67,140 +74,322 @@ const STEPS: Step[] = [
 
 // ── Highlight box ─────────────────────────────────────────────────
 function HighlightBox({ area }: { area: NonNullable<Step['highlight']> }) {
-  const base = 'fixed pointer-events-none rounded-2xl border-2 border-white/50 animate-pulse';
-  const shadow = '0 0 0 3px rgba(255,255,255,0.08), 0 0 24px rgba(255,255,255,0.15)';
+  const base = 'fixed pointer-events-none rounded-2xl border-2 border-amber-400/80 animate-pulse transition-all duration-300';
+  const shadow = '0 0 0 4px rgba(251,191,36,0.2), 0 0 32px rgba(251,191,36,0.3)';
 
-  if (area === 'hud') return (
-    <div className={base} style={{ top: 8, left: 8, right: 8, height: 60, boxShadow: shadow }} />
-  );
-  if (area === 'farm') return (
-    <div className={base} style={{ top: '24%', left: 12, right: 12, height: '34vh', boxShadow: shadow }} />
-  );
-  if (area === 'tools') return (
-    <div className={base} style={{ bottom: 106, left: '50%', transform: 'translateX(-50%)', width: 264, height: 58, borderRadius: 999, boxShadow: shadow }} />
-  );
-  if (area === 'neighbors') return (
-    <div className={base} style={{ bottom: 168, left: 8, right: 8, height: 52, borderRadius: 999, boxShadow: shadow }} />
-  );
+  if (area === 'hud') {
+    return (
+      <div
+        className={base}
+        style={{
+          top: 'max(6px, var(--tg-safe-area-inset-top, env(safe-area-inset-top, 6px)))',
+          left: 10,
+          right: 10,
+          height: 60,
+          borderRadius: 20,
+          boxShadow: shadow,
+        }}
+      />
+    );
+  }
+
+  if (area === 'farm') {
+    return (
+      <div
+        className={base}
+        style={{
+          top: 'calc(max(16px, var(--tg-safe-area-inset-top, env(safe-area-inset-top, 16px))) + 68px)',
+          left: 12,
+          right: 12,
+          bottom: 'calc(max(16px, var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 16px))) + 210px)',
+          borderRadius: 24,
+          boxShadow: shadow,
+        }}
+      />
+    );
+  }
+
+  if (area === 'tools') {
+    return (
+      <div
+        className={base}
+        style={{
+          bottom: 'max(8px, var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 8px)))',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          width: 'min(350px, 94vw)',
+          height: 52,
+          borderRadius: 999,
+          boxShadow: shadow,
+        }}
+      />
+    );
+  }
+
+  if (area === 'explore') {
+    return (
+      <div
+        className={base}
+        style={{
+          bottom: 'calc(max(12px, var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 12px))) + 52px)',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          width: 'min(380px, 95vw)',
+          height: 82,
+          borderRadius: 22,
+          boxShadow: shadow,
+        }}
+      />
+    );
+  }
+
   return null;
 }
 
 // ── Tutorial card ─────────────────────────────────────────────────
 function TutorialCard({
-  step, index, total, onNext, onSkip,
+  step,
+  index,
+  total,
+  onNext,
+  onBack,
+  onSkip,
+  onJump,
 }: {
   step: Step;
   index: number;
   total: number;
   onNext: () => void;
+  onBack: () => void;
   onSkip: () => void;
+  onJump: (i: number) => void;
 }) {
-  const posStyle: React.CSSProperties =
-    step.cardPos === 'top'    ? { top: 76, left: 16, right: 16 } :
-    step.cardPos === 'bottom' ? { bottom: 170, left: 16, right: 16 } :
-    { top: '50%', left: 16, right: 16, transform: 'translateY(-50%)' };
+  const getCardStyle = (): React.CSSProperties => {
+    if (step.cardPos === 'below-hud') {
+      return {
+        top: 'calc(max(16px, var(--tg-safe-area-inset-top, env(safe-area-inset-top, 16px))) + 74px)',
+        left: 16,
+        right: 16,
+        maxWidth: 420,
+        margin: '0 auto',
+      };
+    }
+    if (step.cardPos === 'above-tools') {
+      return {
+        bottom: 'calc(max(16px, var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 16px))) + 148px)',
+        left: 16,
+        right: 16,
+        maxWidth: 420,
+        margin: '0 auto',
+      };
+    }
+    return {
+      top: '50%',
+      left: 16,
+      right: 16,
+      maxWidth: 420,
+      margin: '0 auto',
+      transform: 'translateY(-50%)',
+    };
+  };
 
   return (
     <div
-      className="fixed z-[350] glass rounded-3xl p-5 flex flex-col gap-4 slide-up"
-      style={posStyle}
+      className="fixed z-[350] rounded-3xl p-5 flex flex-col gap-3.5 shadow-2xl transition-all duration-300"
+      style={{
+        ...getCardStyle(),
+        background: 'rgba(18, 26, 20, 0.94)',
+        backdropFilter: 'blur(24px)',
+        border: '1.5px solid rgba(74, 222, 128, 0.35)',
+        boxShadow: '0 20px 50px rgba(0,0,0,0.8), 0 0 24px rgba(74,222,128,0.15)',
+      }}
       onClick={(e) => e.stopPropagation()}
     >
-      {/* Skip button */}
-      <button
-        onClick={onSkip}
-        className="absolute top-4 right-4 glass rounded-full p-1.5 text-white/30 hover:text-white/60 active:scale-90 transition-all"
-      >
-        <X size={14} />
-      </button>
+      {/* Top row: badge + progress dots + skip button */}
+      <div className="flex items-center justify-between gap-2">
+        {step.badge ? (
+          <span className="text-[10px] uppercase tracking-wider font-extrabold px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-emerald-300">
+            {step.badge}
+          </span>
+        ) : <div />}
 
-      {/* Progress dots */}
-      <div className="flex gap-1.5 justify-center pt-1">
-        {STEPS.map((_, i) => (
-          <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${
-            i === index ? 'bg-amber-400 w-4' : i < index ? 'bg-white/40 w-1.5' : 'bg-white/15 w-1.5'
-          }`} />
-        ))}
+        {/* Interactive Progress dots */}
+        <div className="flex items-center gap-1.5">
+          {STEPS.map((_, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => onJump(i)}
+              className={`h-1.5 rounded-full transition-all duration-300 ${
+                i === index
+                  ? 'bg-amber-400 w-5'
+                  : i < index
+                  ? 'bg-white/40 w-1.5 hover:bg-white/60'
+                  : 'bg-white/15 w-1.5 hover:bg-white/30'
+              }`}
+              title={`Jump to step ${i + 1}`}
+            />
+          ))}
+        </div>
+
+        {/* Skip button */}
+        <button
+          onClick={onSkip}
+          className="rounded-full p-1.5 text-white/40 hover:text-white hover:bg-white/10 active:scale-90 transition-all"
+          title="Skip tutorial"
+        >
+          <X size={15} />
+        </button>
       </div>
 
-      {/* Mascot on welcome */}
+      {/* Mascot banner on welcome / final */}
       {step.showMascot && (
-        <div className="flex justify-center -mb-2">
-          <RaccoonMascot size={72} animate />
+        <div className="flex justify-center my-1">
+          <div className="w-20 h-20 rounded-full overflow-hidden relative flex-shrink-0 bg-radial from-green-500/20 to-black/70 border-2 border-green-400/40 shadow-lg animate-[bb-bob_2.5s_ease-in-out_infinite]">
+            <img
+              src="/mascot.png"
+              alt="Bandit Mascot"
+              className="w-28 max-w-none absolute left-1/2 -top-1 -translate-x-1/2 select-none pointer-events-none"
+            />
+          </div>
         </div>
       )}
 
-      {/* Content */}
-      <div className="flex items-start gap-3">
+      {/* Content section */}
+      <div className="flex items-start gap-3 mt-0.5">
         {!step.showMascot && (
-          <div className="w-10 h-10 rounded-xl glass flex items-center justify-center text-2xl flex-shrink-0">
+          <div className="w-11 h-11 rounded-2xl bg-white/10 border border-white/15 flex items-center justify-center text-2xl flex-shrink-0 shadow-inner">
             {step.emoji}
           </div>
         )}
         <div className="flex-1 min-w-0">
-          {step.showMascot && (
-            <p className="text-white font-black text-base leading-tight text-center mb-1">{step.title}</p>
-          )}
-          {!step.showMascot && (
-            <p className="text-white font-black text-sm leading-tight mb-1">{step.title}</p>
-          )}
-          <p className="text-white/55 text-xs leading-relaxed">{step.body}</p>
+          <p className={`text-white font-black text-base leading-tight mb-1.5 ${step.showMascot ? 'text-center' : ''}`}>
+            {step.title}
+          </p>
+          <p className="text-white/70 text-xs leading-relaxed">
+            {step.body}
+          </p>
         </div>
       </div>
 
-      {/* Hint */}
+      {/* Hint info */}
       {step.hint && (
-        <p className="text-amber-300/70 text-[10px] font-semibold text-center -mt-1">{step.hint}</p>
+        <div className="bg-amber-400/10 border border-amber-400/20 rounded-xl px-3 py-1.5 flex items-center justify-center gap-1.5">
+          <span className="text-amber-300 text-[11px] font-semibold text-center">
+            {step.hint}
+          </span>
+        </div>
       )}
 
-      {/* CTA */}
-      <button
-        onClick={onNext}
-        className={`w-full py-3 rounded-2xl font-black text-sm flex items-center justify-center gap-2 active:scale-95 transition-all ${
-          step.isFinal
-            ? 'bg-gradient-to-r from-green-500 to-emerald-400 text-black shadow-[0_0_20px_rgba(74,222,128,0.3)]'
-            : 'bg-white/15 text-white hover:bg-white/20'
-        }`}
-      >
-        {step.isFinal ? (
-          <><span>🚀</span><span>Start Farming!</span></>
-        ) : (
-          <><span>Next</span><ChevronRight size={16} /></>
+      {/* Action CTA Buttons (Back + Next) */}
+      <div className="flex items-center gap-2 pt-1">
+        {index > 0 && (
+          <button
+            onClick={onBack}
+            className="flex-1 py-3 rounded-2xl font-bold text-xs flex items-center justify-center gap-1.5 bg-white/10 hover:bg-white/15 text-white/80 active:scale-95 transition-all border border-white/10"
+          >
+            <ChevronLeft size={16} />
+            <span>Back</span>
+          </button>
         )}
-      </button>
+
+        <button
+          onClick={onNext}
+          className={`py-3 rounded-2xl font-black text-sm flex items-center justify-center gap-2 active:scale-95 transition-all ${
+            index > 0 ? 'flex-[2]' : 'w-full'
+          } ${
+            step.isFinal
+              ? 'bg-gradient-to-r from-green-500 to-emerald-400 text-black shadow-[0_0_24px_rgba(74,222,128,0.4)]'
+              : 'bg-gradient-to-r from-emerald-500 to-green-600 text-white hover:brightness-110 shadow-[0_4px_16px_rgba(16,185,129,0.3)]'
+          }`}
+        >
+          {step.isFinal ? (
+            <>
+              <span>🚀</span>
+              <span>Start Farming!</span>
+            </>
+          ) : (
+            <>
+              <span>Next</span>
+              <ChevronRight size={16} />
+            </>
+          )}
+        </button>
+      </div>
 
       {/* Step counter */}
-      <p className="text-white/20 text-[10px] text-center -mt-2">
-        {index + 1} of {total}
+      <p className="text-white/30 text-[10px] text-center font-medium">
+        Step {index + 1} of {total}
       </p>
     </div>
   );
 }
 
 // ── Main export ───────────────────────────────────────────────────
-export function TutorialOverlay({ onDone }: { onDone: () => void }) {
+export function TutorialOverlay({
+  onDone,
+  storageKey,
+}: {
+  onDone: () => void;
+  storageKey?: string;
+}) {
   const [step, setStep] = useState(0);
   const current = STEPS[step];
 
+  const triggerHaptic = (style: 'selection' | 'success') => {
+    try {
+      const haptic = (window as any).Telegram?.WebApp?.HapticFeedback;
+      if (style === 'selection') {
+        haptic?.selectionChanged?.();
+      } else {
+        haptic?.notificationOccurred?.('success');
+      }
+    } catch {}
+  };
+
   const complete = () => {
     localStorage.setItem(TUTORIAL_KEY, '1');
+    if (storageKey) {
+      localStorage.setItem(storageKey, '1');
+    }
+    triggerHaptic('success');
+    soundManager.play('level_up');
     onDone();
   };
 
   const advance = () => {
-    if (step < STEPS.length - 1) setStep(step + 1);
-    else complete();
+    triggerHaptic('selection');
+    soundManager.play('click');
+    if (step < STEPS.length - 1) {
+      setStep(step + 1);
+    } else {
+      complete();
+    }
+  };
+
+  const goBack = () => {
+    triggerHaptic('selection');
+    soundManager.play('click');
+    if (step > 0) {
+      setStep(step - 1);
+    }
+  };
+
+  const jumpTo = (target: number) => {
+    triggerHaptic('selection');
+    soundManager.play('click');
+    setStep(Math.max(0, Math.min(STEPS.length - 1, target)));
   };
 
   return (
     <div className="fixed inset-0 z-[300]">
       {/* Backdrop — blocks game input during tutorial */}
       <div
-        className="absolute inset-0"
-        style={{ background: 'rgba(0,0,0,0.62)', backdropFilter: 'blur(1px)' }}
+        className="absolute inset-0 transition-opacity duration-300"
+        style={{ background: 'rgba(0, 0, 0, 0.68)', backdropFilter: 'blur(1.5px)' }}
       />
 
-      {/* Spotlight highlight */}
+      {/* Spotlight highlight box */}
       {current.highlight && <HighlightBox area={current.highlight} />}
 
       {/* Tutorial card */}
@@ -209,7 +398,9 @@ export function TutorialOverlay({ onDone }: { onDone: () => void }) {
         index={step}
         total={STEPS.length}
         onNext={advance}
+        onBack={goBack}
         onSkip={complete}
+        onJump={jumpTo}
       />
     </div>
   );

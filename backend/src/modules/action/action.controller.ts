@@ -1,12 +1,12 @@
 import {
   Controller, Get, Post, Body, UseGuards,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
 import { ActionService } from './action.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '../user/entities/user.entity';
 import { PlantDto, HarvestDto, StealDto, PlotIdDto, ThrowAttackDto, FertilizeDto, RevealThiefDto, RepairDto } from './dto/action.dto';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 
 @Controller('action')
 @UseGuards(TelegramAuthGuard)
@@ -18,6 +18,7 @@ export class ActionController {
     return this.actionService.plant(user.id, dto);
   }
 
+  @SkipThrottle()
   @Post('harvest')
   async harvest(@CurrentUser() user: User, @Body() dto: HarvestDto) {
     return this.actionService.harvest(user.id, dto);
@@ -33,9 +34,11 @@ export class ActionController {
     return this.actionService.plantAll(user.id, seedId);
   }
 
-  // Rate limit: max 3 requests per second per user (anti-bot)
-  @Post('steal')
+  // Strict rate limit: 3 steal attempts per second per user.
+  // The 'steal' named throttler (ttl:1000, limit:3) is defined in app.module.ts.
+  // Do NOT add @SkipThrottle() here — steal is exactly the endpoint bots abuse.
   @Throttle({ steal: { limit: 3, ttl: 1000 } })
+  @Post('steal')
   async steal(@CurrentUser() user: User, @Body() dto: StealDto) {
     return this.actionService.steal(user.id, dto);
   }
@@ -56,7 +59,6 @@ export class ActionController {
   }
 
   @Post('throw')
-  @Throttle({ steal: { limit: 5, ttl: 1000 } })
   async throwAttack(@CurrentUser() user: User, @Body() dto: ThrowAttackDto) {
     return this.actionService.throwAttack(user.id, dto);
   }

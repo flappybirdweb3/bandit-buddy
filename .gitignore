@@ -43,3 +43,5 @@ lcov.info
 *.docx
 redesign.md
 reqs.md
+deepseek api.txt
+.aider*

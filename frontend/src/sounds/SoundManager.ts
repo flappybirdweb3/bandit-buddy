@@ -167,6 +167,15 @@ const SYNTHS: Record<SoundId, SynthFn> = {
       note(ctx, f * 2, t + i * 0.08 + 0.01, 0.22, 'triangle', 0.07);
     });
   },
+
+  // 🐶 Dog bark — energetic double woof
+  dog_bark: (ctx) => {
+    const t = ctx.currentTime;
+    sweep(ctx, 280, 140, 0.08, 'sawtooth', 0.20);
+    note(ctx, 160, t + 0.02, 0.07, 'triangle', 0.15);
+    sweep(ctx, 330, 170, 0.09, 'sawtooth', 0.18);
+    note(ctx, 190, t + 0.11, 0.08, 'triangle', 0.13);
+  },
 };
 
 // ── Haptic ───────────────────────────────────────────────────────
@@ -184,6 +193,7 @@ const HAPTIC_MAP: Partial<Record<SoundId, HapticStyle>> = {
   weed_kill:  'light',
   upgrade:    'medium',
   level_up:   'heavy',
+  dog_bark:   'medium',
 };
 
 function triggerHaptic(id: SoundId) {
@@ -191,8 +201,16 @@ function triggerHaptic(id: SoundId) {
   const style = HAPTIC_MAP[id];
   if (!style) return;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).Telegram?.WebApp?.HapticFeedback?.impactOccurred(style);
+    const hf = (window as any).Telegram?.WebApp?.HapticFeedback;
+    if (!hf) return;
+    // steal_win / level_up use notificationOccurred for stronger feedback pattern
+    if (id === 'steal_win' || id === 'daily' || id === 'quest') {
+      hf.notificationOccurred('success');
+    } else if (id === 'steal_fail') {
+      hf.notificationOccurred('error');
+    } else {
+      hf.impactOccurred(style);
+    }
   } catch {}
 }
 

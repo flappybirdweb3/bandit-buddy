@@ -73,7 +73,7 @@ contract GuardDogNFT is ERC1155, ERC1155Supply, Ownable, Pausable, ReentrancyGua
         address _treasury,
         string memory baseUri
     ) ERC1155(baseUri) Ownable(_initialOwner) {
-        if (_farmToken == address(0) || _initialOwner == address(0)) revert ZeroAddress();
+        if (_farmToken == address(0) || _initialOwner == address(0) || _treasury == address(0)) revert ZeroAddress();
         farmToken = IERC20(_farmToken);
         treasury  = _treasury;
         _baseUri  = baseUri;
@@ -191,24 +191,50 @@ contract GuardDogNFT is ERC1155, ERC1155Supply, Ownable, Pausable, ReentrancyGua
     // ── Fusion contract ───────────────────────────────────────────────────────
     address public fusionContract;
 
+    /// @dev Soul Shard — pity-system consolation item. No supply cap, not a breed.
+    uint256 public constant SOUL_SHARD_ID = 9999;
+
     event FusionContractUpdated(address indexed newContract);
+    event SoulShardBurned(address indexed from, uint256 amount);
 
     function setFusionContract(address _fusion) external onlyOwner {
         fusionContract = _fusion;
         emit FusionContractUpdated(_fusion);
     }
 
-    /** Called by BanditDogFusion after commit-reveal resolves. */
+    /**
+     * @notice Called by BanditDogFusion after commit-reveal resolves, or to mint Soul Shards.
+     * - tokenId 1-6  : Guard Dog breeds (supply-capped)
+     * - tokenId 9999 : Soul Shard (unlimited supply, no breed record)
+     */
     function mint(address to, uint256 tokenId, uint256 amount, bytes calldata) external {
         require(msg.sender == fusionContract, "Not fusion contract");
+        if (tokenId == SOUL_SHARD_ID) {
+            _mint(to, tokenId, amount, "");
+            return;
+        }
         if (tokenId < 1 || tokenId > NUM_BREEDS) revert InvalidTokenId(tokenId);
         if (totalSupply(tokenId) + amount > breeds[tokenId].maxSupply)
             revert MaxSupplyReached(tokenId, breeds[tokenId].maxSupply);
         _mint(to, tokenId, amount, "");
     }
 
+    /**
+     * @notice Burn Soul Shards on behalf of a user during shard redemption.
+     * Only callable by the fusion contract (which is authorised by the owner).
+     */
+    function burnShard(address from, uint256 amount) external {
+        require(msg.sender == fusionContract, "Not fusion contract");
+        _burn(from, SOUL_SHARD_ID, amount);
+        emit SoulShardBurned(from, amount);
+    }
+
     // Owner-mint for giveaways / airdrops
     function mintTo(address to, uint256 tokenId, uint256 amount) external onlyOwner {
+        if (tokenId == SOUL_SHARD_ID) {
+            _mint(to, tokenId, amount, "");
+            return;
+        }
         if (tokenId < 1 || tokenId > NUM_BREEDS) revert InvalidTokenId(tokenId);
         if (totalSupply(tokenId) + amount > breeds[tokenId].maxSupply)
             revert MaxSupplyReached(tokenId, breeds[tokenId].maxSupply);

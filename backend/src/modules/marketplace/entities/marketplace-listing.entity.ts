@@ -5,6 +5,7 @@ import {
 import { User } from '../../user/entities/user.entity';
 
 export type ListingStatus = 'active' | 'filled' | 'cancelled';
+export type AssetType = 'nft' | 'user_items';
 
 @Entity('marketplace_listings')
 export class MarketplaceListing {
@@ -14,14 +15,29 @@ export class MarketplaceListing {
   @Column({ name: 'seller_id' })
   sellerId: string;
 
-  @Column({ name: 'nft_contract', length: 42 })
-  nftContract: string;
+  // 'nft' = ERC-1155 on-chain; 'user_items' = off-chain (crops, crates, tools, seeds)
+  @Column({ type: 'varchar', length: 20, name: 'asset_type', default: 'nft' })
+  assetType: AssetType;
 
-  @Column({ name: 'token_id', type: 'int' })
-  tokenId: number;
+  // NFT fields (null for user_items listings)
+  @Column({ type: 'varchar', name: 'nft_contract', length: 42, nullable: true })
+  nftContract: string | null;
+
+  @Column({ name: 'token_id', type: 'int', nullable: true })
+  tokenId: number | null;
+
+  // user_items fields (null for NFT listings)
+  @Column({ type: 'varchar', name: 'item_type', length: 100, nullable: true })
+  itemType: string | null; // e.g. 'master_key', 'crate_wheat', 'crop_tomato'
+
+  @Column({ type: 'decimal', precision: 20, scale: 4, name: 'quantity', default: 1 })
+  quantity: number;
+
+  @Column({ type: 'decimal', precision: 20, scale: 8, name: 'price_per_unit', nullable: true })
+  pricePerUnit: number | null; // $FARM per unit (for user_items)
 
   @Column({ type: 'decimal', precision: 20, scale: 4, name: 'price_farm' })
-  priceFarm: number;
+  priceFarm: number; // total $FARM for the listing
 
   @Column({ type: 'timestamp' })
   deadline: Date;
@@ -29,8 +45,8 @@ export class MarketplaceListing {
   @Column({ type: 'int', default: 0 })
   nonce: number;
 
-  @Column({ length: 132, name: 'eip712_sig' })
-  eip712Sig: string;
+  @Column({ type: 'varchar', length: 132, name: 'eip712_sig', nullable: true })
+  eip712Sig: string | null;
 
   @Column({ type: 'varchar', length: 20, default: 'active' })
   status: ListingStatus;

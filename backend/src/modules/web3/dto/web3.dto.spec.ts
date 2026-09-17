@@ -121,11 +121,13 @@ describe('web3 DTOs — global ValidationPipe contract', () => {
   });
 
   describe('SyncNftDto', () => {
-    it('documents a gap: walletAddress carries no validator', async () => {
-      // `walletAddress: string` has no class-validator decorator, so the global
-      // whitelist treats it as non-whitelisted and forbidNonWhitelisted:true
-      // rejects the whole request. Fix by adding @IsEthereumAddress()/@IsString()
-      // — or better, derive the wallet from the x-telegram-init-data auth context.
+    it('accepts a valid 20-byte hex address', async () => {
+      const valid = '0x1234567890123456789012345678901234567890';
+      const out = await validate(SyncNftDto, { walletAddress: valid });
+      expect(out.walletAddress).toBe(valid);
+    });
+
+    it('rejects an invalid hex address', async () => {
       await expect(validate(SyncNftDto, { walletAddress: '0xabc' }))
         .rejects.toBeInstanceOf(BadRequestException);
     });

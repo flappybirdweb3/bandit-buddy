@@ -1,0 +1,7 @@
+{
+  "network": "bscTestnet",
+  "farmTokenV2": "0xB10067A034078E3FC8335Fb003eEF7334C44952f",
+  "treasuryBuybackPool": "0xB32d81dB128e7739Ad21C4023d2EaF53bb3078A5",
+  "deployer": "0xB32d81dB128e7739Ad21C4023d2EaF53bb3078A5",
+  "timestamp": "2026-09-11T19:24:04.627Z"
+}

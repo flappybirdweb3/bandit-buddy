@@ -26,7 +26,7 @@ export class NotificationService {
   }
 
   // ── Core Telegram push ────────────────────────────────────────────
-  async send(telegramId: number, text: string): Promise<void> {
+  async send(telegramId: number, text: string, buttonText = '🥷 Open BarnBuddy', startParam = 'open'): Promise<void> {
     if (!this.botToken || this.botToken === 'your_telegram_bot_token_here') {
       this.logger.warn(`[Notification] BOT_TOKEN not set — skipping Telegram push to ${telegramId}`);
       return;
@@ -39,8 +39,8 @@ export class NotificationService {
         parse_mode:   'HTML',
         reply_markup: {
           inline_keyboard: [[{
-            text: '🥷 Open Bandit Buddy',
-            url:  `https://t.me/${this.botUsername}?startapp=open`,
+            text: buttonText,
+            url:  `https://t.me/${this.botUsername}?startapp=${startParam}`,
           }]],
         },
       };
@@ -97,22 +97,51 @@ export class NotificationService {
 
   // ── Event helpers ─────────────────────────────────────────────────
 
-  async notifyStealVictim(victimTelegramId: number, victimUserId: string, thiefUsername: string, amount: number, thiefUserId?: string): Promise<void> {
-    const text = `🥷 <b>@${thiefUsername}</b> raided your farm and stole <b>${amount.toFixed(1)}G</b>!\n\nHarvest your crops before they steal more!`;
+  async notifyStealVictim(
+    victimTelegramId: number,
+    victimUserId: string,
+    thiefUsername: string,
+    amount: number,
+    thiefUserId?: string,
+    insuranceReimbursed?: number,
+  ): Promise<void> {
+    const insuranceMsg = insuranceReimbursed && insuranceReimbursed > 0
+      ? `\n\n🛡️ <b>CROP INSURANCE PAYOUT:</b> You were automatically reimbursed <b>+${insuranceReimbursed.toFixed(1)} GOLD (80%)</b> directly to your account!`
+      : '';
+
+    const text =
+      `🚨 <b>FARM RAID ALERT!</b>\n\n` +
+      `🥷 <b>@${thiefUsername}</b> slipped past your defenses and stole <b>${amount.toFixed(1)} GOLD</b>!${insuranceMsg}\n\n` +
+      `🔍 <i>Check your Guard Dogs, harvest remaining crops, or use Detective Glasses to launch Revenge!</i>`;
+
+    const inAppSub = insuranceReimbursed && insuranceReimbursed > 0
+      ? `They stole ${amount.toFixed(1)}G (🛡️ Insurance reimbursed +${insuranceReimbursed.toFixed(1)}G).`
+      : `They stole ${amount.toFixed(1)}G from your farm.`;
+
     await Promise.all([
-      this.send(victimTelegramId, text),
+      this.send(victimTelegramId, text, '⚔️ Open Farm & Revenge', 'revenge'),
       this.createInApp(victimUserId, 'steal_victim',
         `🥷 Raided by @${thiefUsername}`,
-        `They stole ${amount.toFixed(1)}G from your farm.`,
+        inAppSub,
         thiefUserId, thiefUsername),
     ]);
   }
 
-  async notifyDogBiteOwner(ownerUserId: string, thiefUsername: string, goldDropped: number): Promise<void> {
+  async notifyDogBiteOwner(ownerUserId: string, thiefUsername: string, goldDropped: number, ownerTelegramId?: number): Promise<void> {
     if (goldDropped <= 0) return;
-    await this.createInApp(ownerUserId, 'dog_bite_owner',
-      `🐕 Your dog bit @${thiefUsername}!`,
-      `They dropped ${goldDropped.toFixed(1)}G trying to raid you.`);
+    const promises: Promise<any>[] = [
+      this.createInApp(ownerUserId, 'dog_bite_owner',
+        `🐕 Your dog bit @${thiefUsername}!`,
+        `They dropped ${goldDropped.toFixed(1)}G trying to raid you.`),
+    ];
+    if (ownerTelegramId) {
+      const text =
+        `🐕💥 <b>GOOD BOY! Guard Dog Defended Your Farm!</b>\n\n` +
+        `🥷 <b>@${thiefUsername}</b> tried to raid your plots, but your faithful Guard Dog intercepted and bit them!\n\n` +
+        `💰 The thief dropped <b>+${goldDropped.toFixed(1)} GOLD</b> compensation into your account!`;
+      promises.push(this.send(ownerTelegramId, text, '🐕 View Dog & Farm', 'dogs'));
+    }
+    await Promise.all(promises);
   }
 
   async notifyAttackVictim(victimUserId: string, attackerUsername: string, type: 'bugs' | 'weeds'): Promise<void> {
@@ -130,14 +159,60 @@ export class NotificationService {
       `Claim your reward: ${reward}`);
   }
 
-  async notifyReferralBonus(referrerUserId: string, referrerTelegramId: number, newUsername: string, bonus: number): Promise<void> {
-    const text = `🎉 <b>@${newUsername}</b> joined Bandit Buddy via your invite!\n\nYou earned <b>+${bonus}G</b> referral bonus!`;
+  async notifyReferralBonus(referrerUserId: string, referrerTelegramId: number, newUsername: string, bonus: number, magnifiers = 1): Promise<void> {
+    const magText = magnifiers > 0 ? ` and <b>+${magnifiers} Magnifying Glass${magnifiers > 1 ? 'es' : ''} 🔍</b>` : '';
+    const text = `🎉 <b>@${newUsername}</b> joined Bandit Buddy via your invite!\n\nYou earned <b>+${bonus}G</b>${magText} referral bonus!`;
     await Promise.all([
-      this.send(referrerTelegramId, text),
+      this.send(referrerTelegramId, text, '🥷 View Crew & Rewards', 'invite'),
       this.createInApp(referrerUserId, 'referral_joined',
         `🎉 @${newUsername} joined!`,
-        `+${bonus}G referral bonus added to your account.`),
+        `+${bonus}G${magnifiers > 0 ? ` and +${magnifiers} 🔍` : ''} added to your inventory.`),
     ]);
+  }
+
+  async notifyMasterKeyAwarded(referrerUserId: string, referrerTelegramId?: number, keys = 1): Promise<void> {
+    const text = `🗝️💥 <b>MASTER KEY UNLOCKED!</b>\n\n3 of your recruited friends reached Player Level 3! You received <b>+${keys} Master Key 🗝️</b> to bypass guard dogs on any raid!`;
+    const promises: Promise<any>[] = [
+      this.createInApp(referrerUserId, 'master_key_unlocked',
+        `🗝️ Master Key Unlocked!`,
+        `+${keys} Master Key added to inventory (3 friends hit Lvl 3).`),
+    ];
+    if (referrerTelegramId) {
+      promises.push(this.send(referrerTelegramId, text, '🗝️ View Inventory', 'storage'));
+    }
+    await Promise.all(promises);
+  }
+
+  async notifyHelpNeighbor(ownerUserId: string, helperUsername: string, actionType: 'bugs' | 'weeds' | 'water'): Promise<void> {
+    const actionLabel = actionType === 'bugs' ? 'sprayed bugs on' : actionType === 'weeds' ? 'cleared weeds from' : 'watered';
+    const emoji = actionType === 'bugs' ? '🐛' : actionType === 'weeds' ? '🌿' : '💧';
+    await this.createInApp(ownerUserId, 'help_received',
+      `🤝 @${helperUsername} helped your farm!`,
+      `They ${emoji} ${actionLabel} your crop. Check your farm!`);
+  }
+
+  async notifyItemSold(
+    sellerUserId: string,
+    itemType: string,
+    quantity: number,
+    priceFormatted: string,
+    buyerUsername?: string,
+    sellerTelegramId?: number,
+  ): Promise<void> {
+    const formattedItem = itemType.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
+    const title = `💰 Item Sold!`;
+    const body = `Your ${formattedItem}${quantity > 1 ? ` ×${quantity}` : ''} sold for ${priceFormatted}! Cha-ching!`;
+    const promises: Promise<any>[] = [
+      this.createInApp(sellerUserId, 'trade_filled', title, body, undefined, buyerUsername),
+    ];
+    if (sellerTelegramId) {
+      const tgText =
+        `💰 <b>MARKETPLACE SALE!</b>\n\n` +
+        `Your <b>${formattedItem}${quantity > 1 ? ` ×${quantity}` : ''}</b> was purchased for <b>${priceFormatted}</b>!\n\n` +
+        `Earnings were delivered directly to your wallet!`;
+      promises.push(this.send(sellerTelegramId, tgText, '💰 View Market', 'market'));
+    }
+    await Promise.all(promises);
   }
 
   // ── Crons ─────────────────────────────────────────────────────────

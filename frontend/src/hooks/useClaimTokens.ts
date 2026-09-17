@@ -89,15 +89,15 @@ function friendlyError(err: unknown): string {
 
   // Decoded on-chain custom errors first — these are the actionable verdicts.
   if (revertName === 'InvalidSignature' || /InvalidSignature/i.test(haystack))
-    return 'Signature rejected on-chain. This usually means the wallet on this device differs from the wallet linked to your account (Settings → BSC Wallet). Your GOLD was returned.';
+    return 'Signature rejected on-chain. This usually means the wallet on this device differs from the wallet linked to your account (Settings → BSC Wallet).';
   if (revertName === 'NonceAlreadyUsed' || /NonceAlreadyUsed|nonce.*already used/i.test(haystack))
     return 'This claim was already processed on-chain. Refresh your balance — you were not charged twice.';
   if (revertName === 'InsufficientPoolBalance' || /InsufficientPoolBalance/i.test(haystack))
-    return 'The FARM reward pool is empty right now. Your GOLD was returned — please try again later.';
+    return 'The FARM reward pool is empty right now. Please try again later.';
   if (revertName === 'AmountOutOfBounds' || /AmountOutOfBounds/i.test(haystack))
-    return 'Claim amount is outside the contract limit (1 – 100,000 FARM). Try a smaller amount. Your GOLD was returned.';
+    return 'Claim amount is outside the contract limit (1 – 100,000 FARM). Try a smaller amount.';
   if (revertName === 'EnforcedPause' || /EnforcedPause/i.test(haystack))
-    return 'Claims are temporarily paused. Your GOLD was returned — try again later.';
+    return 'Claims are temporarily paused — try again later.';
 
   // Transport / wallet-level conditions.
   if (/total cost|insufficient funds|gas.*balance|balance.*gas/i.test(msg))
@@ -107,7 +107,7 @@ function friendlyError(err: unknown): string {
   if (/network|timeout|fetch|detect network/i.test(msg))
     return 'Network error reaching BSC. Check your connection and try again.';
   if (/execution reverted/i.test(msg))
-    return 'Contract rejected the transaction. Your GOLD was returned — see the console for the raw revert.';
+    return 'Contract rejected the transaction.';
 
   return msg.length > 160 ? msg.slice(0, 160) + '…' : msg;
 }
@@ -209,16 +209,17 @@ export function useClaimTokens() {
       if (receivedNonce !== null) {
         if (!broadcasted) {
           // No tx reached the mempool, so there is no on-chain success to race against.
-          // Return the GOLD now instead of making the player find a Refund button.
-          // The backend independently re-checks isNonceUsed() before crediting.
+          // Return the GOLD immediately instead of making the player find a Refund button.
           try {
-            await api.refundClaim(receivedNonce);
+            const res = await api.refundClaim(receivedNonce, true);
             setPendingNonce(null);
+            setRefundable(false);
             qc.invalidateQueries({ queryKey: ['profile'] });
-            message += ' ↩ GOLD refunded automatically.';
+            message += ` ↩ (${res.goldRestored ?? 'Your'} GOLD has been automatically returned to your balance).`;
           } catch {
             // Refund endpoint unreachable/failed — fall back to the manual button.
             setRefundable(true);
+            message += ' ⚠️ Please click "Refund GOLD" below to return your GOLD.';
           }
         } else {
           // A tx hash exists: it may still confirm. Never auto-refund; let the player
@@ -236,10 +237,11 @@ export function useClaimTokens() {
     if (pendingNonce === null) return;
     setRefunding(true);
     try {
-      await api.refundClaim(pendingNonce);
+      const res = await api.refundClaim(pendingNonce, true);
       setPendingNonce(null);
       setRefundable(false);
       qc.invalidateQueries({ queryKey: ['profile'] });
+      setError(`✅ ${res.goldRestored ?? 'Your'} GOLD has been successfully refunded!`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Refund failed';
       setError(msg.length > 120 ? msg.slice(0, 120) + '…' : msg);

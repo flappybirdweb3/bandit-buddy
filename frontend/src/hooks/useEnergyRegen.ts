@@ -1,13 +1,12 @@
 import { useState, useEffect } from 'react';
 
-const MAX_ENERGY       = 100;
-const REGEN_PER_HOUR   = 10;        // +10 energy per hour = +1 per 6 min
-const TICK_MS          = 360_000;   // 6 minutes in ms
+const REGEN_PER_HOUR   = 15;        // +15 energy per hour = +1 per 4 min (sync with backend)
+const TICK_MS          = 240_000;   // 4 minutes in ms
 
 export interface EnergyRegenInfo {
   nextTickIn: number;   // ms until next +1 energy tick
-  timeToFull: number;   // ms until energy hits 100 (0 if already full)
-  nextTickLabel: string; // "4m 32s"
+  timeToFull: number;   // ms until energy hits max (0 if already full)
+  nextTickLabel: string; // "3m 45s"
   fullLabel: string;     // "1h 20m" or "Full!"
 }
 
@@ -25,6 +24,7 @@ function fmtMs(ms: number): string {
 export function useEnergyRegen(
   energy: number,
   lastEnergyUpdate: string | null | undefined,
+  maxEnergy: number = 100,
 ): EnergyRegenInfo {
   const [now, setNow] = useState(Date.now);
 
@@ -33,7 +33,9 @@ export function useEnergyRegen(
     return () => clearInterval(id);
   }, []);
 
-  if (!lastEnergyUpdate || energy >= MAX_ENERGY) {
+  const cap = Math.max(1, maxEnergy);
+
+  if (!lastEnergyUpdate || energy >= cap) {
     return { nextTickIn: 0, timeToFull: 0, nextTickLabel: '', fullLabel: 'Full!' };
   }
 
@@ -46,7 +48,7 @@ export function useEnergyRegen(
   const nextTickIn   = Math.max(0, nextTickAtMs - now);
 
   // how many more ticks until full
-  const ticksNeeded  = MAX_ENERGY - energy;
+  const ticksNeeded  = Math.max(0, cap - energy);
   const fullAtMs     = lastMs + ((elapsedTicks + ticksNeeded) / REGEN_PER_HOUR) * 3_600_000;
   const timeToFull   = Math.max(0, fullAtMs - now);
 

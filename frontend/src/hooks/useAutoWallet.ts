@@ -1,10 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
+import WebApp from '@twa-dev/sdk';
 import type { UserProfile } from '@/types/game.types';
 
-const WALLET_PK_KEY = 'bb_wallet_pk';
+const WALLET_PK_KEY_LEGACY = 'bb_wallet_pk';
 const WALLET_SETUP_SHOWN_KEY = 'bb_wallet_setup_shown';
+
+export function getUserWalletKey(telegramId?: number | string | null): string {
+  const tid = telegramId ?? WebApp.initDataUnsafe?.user?.id;
+  return tid ? `bb_wallet_pk_${tid}` : WALLET_PK_KEY_LEGACY;
+}
 
 export function useAutoWallet(profile: UserProfile | undefined) {
   const [showSetup, setShowSetup] = useState(false);
@@ -18,37 +24,55 @@ export function useAutoWallet(profile: UserProfile | undefined) {
     if (!profile || ran.current) return;
     ran.current = true;
 
-    const existingPk = localStorage.getItem(WALLET_PK_KEY) as `0x${string}` | null;
-    const alreadyShown = localStorage.getItem(WALLET_SETUP_SHOWN_KEY) === '1';
+    const userKey = getUserWalletKey(profile.telegramId);
+    let existingPk = localStorage.getItem(userKey) as `0x${string}` | null;
+    const legacyPk = localStorage.getItem(WALLET_PK_KEY_LEGACY) as `0x${string}` | null;
+    const alreadyShown =
+      localStorage.getItem(`${WALLET_SETUP_SHOWN_KEY}_${profile.telegramId}`) === '1' ||
+      localStorage.getItem(WALLET_SETUP_SHOWN_KEY) === '1';
 
     // Lazy-load viem — keeps it out of the initial bundle
     import('viem/accounts').then(({ generatePrivateKey, privateKeyToAccount }) => {
-      // ── Case 1: this device already holds a key ──────────────────────────────
-      if (existingPk) {
-        const account = privateKeyToAccount(existingPk);
-        const matches = !!profile.walletAddress
-          && account.address.toLowerCase() === profile.walletAddress.toLowerCase();
-
-        if (!profile.walletAddress) {
-          // Account has no wallet at all yet — link the one this device holds.
-          api.updateWallet(account.address)
-            .then(() => qc.invalidateQueries({ queryKey: ['profile'] }))
-            .catch(() => {});
-        } else if (!matches) {
-          // Account is linked to a DIFFERENT wallet. This device's key cannot sign for it;
-          // flag it instead of relinking the account to a wallet that would strand the
-          // $FARM the linked wallet already holds.
-          setWalletLocked(true);
-        }
-        return;
+      // If no scoped key yet, check if legacy pk belongs to this profile
+      if (!existingPk && legacyPk) {
+        try {
+          const legacyAccount = privateKeyToAccount(legacyPk);
+          if (
+            profile.walletAddress &&
+            legacyAccount.address.toLowerCase() === profile.walletAddress.toLowerCase()
+          ) {
+            existingPk = legacyPk;
+            localStorage.setItem(userKey, legacyPk);
+          }
+        } catch {}
       }
 
-      // ── Case 2: no local key, but the account already has a wallet ───────────
-      //
-      // That wallet was created on another device. Generating a key here would produce a
-      // different address and (previously) overwrite the account's wallet — which is why
-      // the same Telegram account reported a different wallet address on every machine.
-      // The user must import the existing private key instead.
+      // ── Case 1: this user already holds a key ──────────────────────────────
+      if (existingPk) {
+        try {
+          const account = privateKeyToAccount(existingPk);
+          const matches =
+            !!profile.walletAddress &&
+            account.address.toLowerCase() === profile.walletAddress.toLowerCase();
+
+          if (!profile.walletAddress) {
+            // Account has no wallet at all yet — link the one this device holds.
+            api
+              .updateWallet(account.address)
+              .then(() => qc.invalidateQueries({ queryKey: ['profile'] }))
+              .catch(() => {});
+          } else if (!matches) {
+            // Account is linked to a DIFFERENT wallet. This device's key cannot sign for it;
+            // flag it instead of relinking the account to a wallet that would strand funds.
+            setWalletLocked(true);
+          }
+          return;
+        } catch {
+          // Corrupt existing key, fall through
+        }
+      }
+
+      // ── Case 2: no local key for this user, but account already has a wallet ───────────
       if (profile.walletAddress) {
         setWalletLocked(true);
         return;
@@ -56,20 +80,20 @@ export function useAutoWallet(profile: UserProfile | undefined) {
 
       // ── Case 3: brand-new account with no wallet anywhere — safe to create ───
       const pk = generatePrivateKey();
-      localStorage.setItem(WALLET_PK_KEY, pk);
+      localStorage.setItem(userKey, pk);
+      localStorage.setItem(WALLET_PK_KEY_LEGACY, pk);
       const account = privateKeyToAccount(pk);
 
-      api.updateWallet(account.address)
+      api
+        .updateWallet(account.address)
         .then(() => {
           qc.invalidateQueries({ queryKey: ['profile'] });
           if (!alreadyShown) setShowSetup(true);
         })
         .catch((err: unknown) => {
-          // Lost a race with another device, or the address is taken: drop the unusable
-          // local key so the next launch takes Case 1/2 instead of retrying it forever.
           const msg = err instanceof Error ? err.message : '';
           if (/already (has a linked|linked to)/i.test(msg)) {
-            localStorage.removeItem(WALLET_PK_KEY);
+            localStorage.removeItem(userKey);
             setWalletLocked(true);
           }
         });
@@ -77,6 +101,9 @@ export function useAutoWallet(profile: UserProfile | undefined) {
   }, [profile]);
 
   const dismissSetup = () => {
+    if (profile?.telegramId) {
+      localStorage.setItem(`${WALLET_SETUP_SHOWN_KEY}_${profile.telegramId}`, '1');
+    }
     localStorage.setItem(WALLET_SETUP_SHOWN_KEY, '1');
     setShowSetup(false);
   };
@@ -84,6 +111,11 @@ export function useAutoWallet(profile: UserProfile | undefined) {
   return { showSetup, dismissSetup, walletLocked };
 }
 
-export function getStoredWalletPk(): `0x${string}` | null {
-  return localStorage.getItem(WALLET_PK_KEY) as `0x${string}` | null;
+export function getStoredWalletPk(telegramId?: number | string | null): `0x${string}` | null {
+  const tid = telegramId ?? WebApp.initDataUnsafe?.user?.id;
+  if (tid) {
+    const userPk = localStorage.getItem(`bb_wallet_pk_${tid}`);
+    if (userPk) return userPk as `0x${string}`;
+  }
+  return localStorage.getItem(WALLET_PK_KEY_LEGACY) as `0x${string}` | null;
 }

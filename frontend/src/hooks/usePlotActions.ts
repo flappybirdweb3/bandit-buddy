@@ -11,6 +11,8 @@ export function usePlant() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['myFarm'] });
       qc.invalidateQueries({ queryKey: ['profile'] });
+      qc.invalidateQueries({ queryKey: ['dailyQuests'] });
+      qc.invalidateQueries({ queryKey: ['achievements'] });
     },
   });
 }
@@ -22,6 +24,9 @@ export function useHarvest() {
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['myFarm'] });
       qc.invalidateQueries({ queryKey: ['profile'] });
+      qc.invalidateQueries({ queryKey: ['barnData'] });
+      qc.invalidateQueries({ queryKey: ['dailyQuests'] });
+      qc.invalidateQueries({ queryKey: ['achievements'] });
       if (res.levelUp) eventBus.emit('level-up', { newLevel: res.newLevel });
     },
   });
@@ -29,12 +34,14 @@ export function useHarvest() {
 
 export function useSteal(plotIndex: number) {
   const qc = useQueryClient();
-  return useMutation<StealResult, Error, { targetUserId: string; plotId: string }>({
-    mutationFn: ({ targetUserId, plotId }) => api.steal(targetUserId, plotId),
+  return useMutation<StealResult, Error, { targetUserId: string; plotId: string; useMasterKey?: boolean; isRevenge?: boolean }>({
+    mutationFn: ({ targetUserId, plotId, useMasterKey, isRevenge }) => api.steal(targetUserId, plotId, useMasterKey, isRevenge),
     onSuccess: (result) => {
       eventBus.emit('steal-animation', { success: result.success, plotIndex });
       qc.invalidateQueries({ queryKey: ['profile'] });
       qc.invalidateQueries({ queryKey: ['friendFarm'] });
+      qc.invalidateQueries({ queryKey: ['dailyQuests'] });
+      qc.invalidateQueries({ queryKey: ['achievements'] });
     },
   });
 }

@@ -7,8 +7,11 @@ export type NotifType =
   | 'quest_complete'
   | 'harvest_ready'
   | 'referral_joined'
+  | 'master_key_unlocked'
   | 'daily_reminder'
-  | 'attack_victim';
+  | 'attack_victim'
+  | 'help_received'
+  | 'trade_filled';
 
 @Entity('user_notifications')
 export class UserNotification {

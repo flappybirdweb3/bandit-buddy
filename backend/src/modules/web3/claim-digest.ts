@@ -18,8 +18,6 @@ import { ethers } from 'ethers';
 
 /** ABI types of the packed pre-image, in order. Exported so tests can pin the layout. */
 export const CLAIM_DIGEST_TYPES: readonly string[] = [
-  'uint256', // block.chainid
-  'address', // address(this) — the FarmTokenClaim deployment
   'address', // user / msg.sender
   'uint256', // amount in wei
   'uint256', // per-user nonce
@@ -40,8 +38,6 @@ export function buildClaimDigest(
   nonce: number | bigint,
 ): string {
   return ethers.solidityPackedKeccak256(CLAIM_DIGEST_TYPES, [
-    chainId,
-    claimContract,
     userAddress,
     amountWei,
     nonce,

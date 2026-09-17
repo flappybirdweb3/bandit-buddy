@@ -1,7 +1,14 @@
 import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
 
-export type ShopCategory = 'energy' | 'defense' | 'boost' | 'soil' | 'subscription';
-export type EffectType = 'energy' | 'guard_pup' | 'guard_hound' | 'fertilizer_normal' | 'fertilizer_super' | 'fertilizer_advanced' | 'soil_restore_basic' | 'soil_restore_premium' | 'butler_7d' | 'butler_30d' | 'crop_insurance_7d';
+export type ShopCategory = 'energy' | 'defense' | 'boost' | 'soil' | 'subscription' | 'upgrades';
+export type EffectType =
+  | 'energy'
+  | 'dog_stray' | 'dog_beagle' | 'dog_husky' | 'dog_shepherd' | 'elephant'
+  | 'guard_pup' | 'guard_hound'
+  | 'fertilizer_normal' | 'fertilizer_super' | 'fertilizer_advanced'
+  | 'soil_restore_basic' | 'soil_restore_premium'
+  | 'butler_7d' | 'butler_30d' | 'crop_insurance_7d'
+  | 'max_energy';
 
 @Entity('shop_items')
 export class ShopItem {

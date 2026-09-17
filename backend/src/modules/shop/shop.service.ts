@@ -48,20 +48,24 @@ export class ShopService {
 
   // ── Catalog + user ownership info ────────────────────────────────
   async getItems(userId: string) {
-    const [items, user, activeDogs] = await Promise.all([
+    const [items, user, activeShopDogs, subStatus] = await Promise.all([
       this.itemRepo.find({ order: { sortOrder: 'ASC' } }),
       this.userRepo.findOne({ where: { id: userId } }),
-      this.dogRepo.find({ where: { ownerId: userId, isActive: true } }),
+      this.dogRepo.find({ where: { ownerId: userId, isActive: true, source: 'shop' } }),
+      this.guildService.getSubscriptionStatus(userId).catch(() => ({
+        hasButler: false,
+        hasCropInsurance: false,
+        subscriptions: [] as { type: string; expiresAt: Date }[],
+      })),
     ]);
 
     if (!user) throw new NotFoundException('User not found');
 
-    // Current active pet (highest defense_power wins if multiple legacy dogs)
-    const currentPet = activeDogs.length > 0
-      ? activeDogs.reduce((best, d) => d.defensePower > best.defensePower ? d : best)
+    // Current active pet (highest defense_power wins if multiple legacy shop dogs)
+    const currentPet = activeShopDogs.length > 0
+      ? activeShopDogs.reduce((best, d) => d.defensePower > best.defensePower ? d : best)
       : null;
     const currentPetType   = currentPet?.dogType ?? null;
-    const currentPetRank   = currentPetType ? petTierRank(currentPetType) : -1;
     const currentPetDefense = currentPet?.defensePower ?? 0;
 
     const totalFertCharges =
@@ -69,12 +73,17 @@ export class ShopService {
 
     return {
       goldBalance:          Number(user.goldBalance),
+      energy:               user.energy ?? 0,
+      maxEnergy:            user.maxEnergy ?? MAX_ENERGY,
       fertilizerCharges:    totalFertCharges,
       normalFertCharges:    user.normalFertCharges ?? 0,
       superFertCharges:     user.superFertCharges  ?? 0,
       advancedFertCharges:  user.advancedFertCharges ?? 0,
       currentPetType,
       currentPetDefense,
+      subscriptions:        subStatus.subscriptions,
+      hasButler:            subStatus.hasButler,
+      hasCropInsurance:     subStatus.hasCropInsurance,
       items: items.map((item) => {
         let owned    = 0;
         let maxOwned = null as number | null;
@@ -82,7 +91,6 @@ export class ShopService {
 
         if (isGuardPet(item.effectType)) {
           const isActivePet = item.effectType === currentPetType;
-          const itemRank    = petTierRank(item.effectType);
           owned    = isActivePet ? 1 : 0;
           maxOwned = 1;
           // "soldOut" = currently active (already own it). Weaker pets are shown differently in frontend.
@@ -99,6 +107,12 @@ export class ShopService {
           owned    = user.advancedFertCharges ?? 0;
           maxOwned = MAX_FERT_ADVANCED;
           soldOut  = (user.advancedFertCharges ?? 0) >= MAX_FERT_ADVANCED;
+        } else if (item.category === 'subscription') {
+          const subType = item.effectType.startsWith('butler') ? 'butler' : 'crop_insurance';
+          const sub = subStatus.subscriptions.find((s) => s.type === subType);
+          owned = sub ? 1 : 0;
+          maxOwned = 1;
+          soldOut = false;
         }
 
         return {
@@ -145,12 +159,12 @@ export class ShopService {
       let resultMsg = '';
 
       if (isGuardPet(item.effectType)) {
-        const existingDogs = await qr.manager.find(NftGuardDog, {
-          where: { ownerId: userId, isActive: true },
+        const existingShopDogs = await qr.manager.find(NftGuardDog, {
+          where: { ownerId: userId, isActive: true, source: 'shop' },
         });
 
-        const currentPet = existingDogs.length > 0
-          ? existingDogs.reduce((best, d) => d.defensePower > best.defensePower ? d : best)
+        const currentPet = existingShopDogs.length > 0
+          ? existingShopDogs.reduce((best, d) => d.defensePower > best.defensePower ? d : best)
           : null;
 
         const itemRank    = petTierRank(item.effectType);
@@ -166,13 +180,13 @@ export class ShopService {
           );
         }
 
-        // Deactivate all existing shop pets (allow NFT pets to stay but override with shop pet)
-        if (existingDogs.length > 0) {
-          const ids = existingDogs.map((d) => d.id);
+        // Deactivate ONLY existing shop pets (preserve NFT pets!)
+        if (existingShopDogs.length > 0) {
+          const ids = existingShopDogs.map((d) => d.id);
           await qr.manager
             .createQueryBuilder()
             .update(NftGuardDog)
-            .set({ isActive: false })
+            .set({ isActive: false, isGuarding: false })
             .where('id IN (:...ids)', { ids })
             .execute();
         }
@@ -184,6 +198,7 @@ export class ShopService {
           dogType:      item.effectType,
           defensePower: item.effectValue,
           isActive:     true,
+          isGuarding:   true,
           source:       'shop',
         });
 
@@ -216,50 +231,47 @@ export class ShopService {
 
       // ── Soil Restoration (#37) ────────────────────────────────────
       } else if (eff === 'soil_restore_basic' || eff === 'soil_restore_premium') {
-        // Applies to ALL user's plots with low soil fertility, up to effectValue total pct
-        const plots = await qr.manager
-          .createQueryBuilder()
-          .select(['id', 'soil_fertility'])
-          .from('farm_plots', 'p')
-          .where('p.user_id = :uid', { uid: userId })
-          .andWhere('p.soil_fertility < 100')
-          .orderBy('p.soil_fertility', 'ASC')
-          .getRawMany<{ id: string; soil_fertility: number }>();
+        const depletedPlots = await qr.manager.query(
+          `SELECT id, soil_fertility FROM farm_plots WHERE user_id = $1 AND soil_fertility < 100`,
+          [userId],
+        );
 
-        let restored = 0;
-        for (const plot of plots) {
-          const canAdd = Math.min(item.effectValue, 100 - plot.soil_fertility);
-          if (canAdd > 0) {
-            await qr.manager.createQueryBuilder()
-              .update('farm_plots')
-              .set({ soil_fertility: () => `LEAST(100, "soil_fertility" + ${canAdd})` })
-              .where('id = :id', { id: plot.id })
-              .execute();
-            restored += canAdd;
-          }
-          if (restored >= item.effectValue) break;
+        if (depletedPlots.length === 0) {
+          throw new BadRequestException('All your farm plots already have 100% soil fertility! No compost needed.');
         }
-        resultMsg = plots.length === 0
-          ? `${item.name} used — all plots already at 100% fertility!`
-          : `${item.name} applied — restored up to ${item.effectValue}% soil fertility across ${plots.length} plot(s)`;
+
+        await qr.manager.query(
+          `UPDATE farm_plots SET soil_fertility = LEAST(100, soil_fertility + $1) WHERE user_id = $2 AND soil_fertility < 100`,
+          [item.effectValue, userId],
+        );
+
+        await qr.manager.query(
+          `INSERT INTO gold_transactions (user_id, amount, type, category, description) VALUES ($1, $2, 'BURN', 'SHOP_PURCHASE', $3)`,
+          [userId, cost, `Shop: ${item.name}`],
+        ).catch(() => {});
+
+        resultMsg = `🌱 ${item.name} applied! Restored +${item.effectValue}% soil fertility across ${depletedPlots.length} plot(s).`;
 
       // ── Energy refill ──────────────────────────────────────────────
       } else if (eff === 'energy') {
         const userMaxEnergy = user.maxEnergy ?? MAX_ENERGY;
+        if (user.energy >= userMaxEnergy) {
+          throw new BadRequestException(`Your energy is already full (${user.energy}/${userMaxEnergy}⚡).`);
+        }
         const gained = Math.min(item.effectValue, userMaxEnergy - user.energy);
         await qr.manager.createQueryBuilder()
           .update(User)
           .set({ energy: () => `LEAST("max_energy", "energy" + ${item.effectValue})` })
           .where('id = :id', { id: userId })
           .execute();
-        resultMsg = `+${gained} energy restored`;
+        resultMsg = `+${gained} energy restored (${user.energy + gained}/${userMaxEnergy}⚡)`;
 
       // ── Subscriptions (Butler / Crop Insurance) ────────────────────
       } else if (['butler_7d', 'butler_30d', 'crop_insurance_7d'].includes(eff)) {
-        // Deduct gold before calling guild service
+        // Gold deduct + subscription creation must be atomic
         await qr.manager.decrement(User, { id: userId }, 'goldBalance', cost);
+        const subResult = await this.guildService.purchaseSubscriptionTx(qr.manager, userId, eff);
         await qr.commitTransaction();
-        const subResult = await this.guildService.purchaseSubscription(userId, eff);
         return { message: subResult.message, itemName: item.name, costGold: cost };
 
       // ── Max energy upgrade (permanent) ─────────────────────────────

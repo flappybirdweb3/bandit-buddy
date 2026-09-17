@@ -21,6 +21,13 @@ const config: HardhatUserConfig = {
   networks: {
     hardhat: {
       chainId: 31337,
+      chains: {
+        97: {
+          hardforkHistory: {
+            cancun: 0,
+          },
+        },
+      },
       allowUnlimitedContractSize: false,
     },
     localhost: {
@@ -31,8 +38,8 @@ const config: HardhatUserConfig = {
       url: 'https://data-seed-prebsc-1-s1.binance.org:8545/',
       chainId: 97,
       accounts: SIGNER_PK ? [SIGNER_PK] : [],
-      gasPrice: 10_000_000_000, // 10 gwei
-      timeout: 60_000,
+      gasPrice: 3_000_000_000, // 3 gwei — testnet minimum, saves ~0.012 tBNB vs 10 gwei
+      timeout: 120_000,
     },
     bscMainnet: {
       url: 'https://bsc-dataseed.binance.org/',

@@ -79,15 +79,15 @@ export class QuestService {
   }
 
   // ── Called from ActionService (fire-and-forget) ───────────────────
-  async onHarvest(userId: string, goldEarned: number): Promise<void> {
+  async onHarvest(userId: string, count = 1, goldEarned = 0): Promise<void> {
     await Promise.all([
-      this.increment(userId, 'harvest_count', 1),
+      this.increment(userId, 'harvest_count', count),
       this.increment(userId, 'harvest_gold', goldEarned),
     ]);
   }
 
-  async onPlant(userId: string): Promise<void> {
-    await this.increment(userId, 'plant_count', 1);
+  async onPlant(userId: string, count = 1): Promise<void> {
+    await this.increment(userId, 'plant_count', count);
   }
 
   async onStealAttempt(userId: string, success: boolean, goldAmount: number): Promise<void> {
@@ -104,11 +104,37 @@ export class QuestService {
     await this.increment(userId, 'attack_count', 1);
   }
 
-  async onWater(userId: string): Promise<void> {
-    await this.increment(userId, 'water_count', 1);
+  async onWater(userId: string, count = 1): Promise<void> {
+    await this.increment(userId, 'water_count', count);
   }
 
-  // ── Claim a completed quest reward ───────────────────────────────
+  // ── Claim all completed daily quest rewards at once ──────────────
+  async claimAllRewards(userId: string) {
+    const today = todayUTC();
+    const claimable = await this.questRepo.find({
+      where: { userId, questDate: today, completed: true, claimed: false },
+    });
+
+    if (claimable.length === 0) {
+      return { claimedCount: 0, totalGold: 0, totalEnergy: 0 };
+    }
+
+    let totalGold = 0;
+    let totalEnergy = 0;
+    for (const q of claimable) {
+      const res = await this.claimReward(userId, q.id);
+      totalGold += res.rewardGold;
+      totalEnergy += res.rewardEnergy;
+    }
+
+    return {
+      claimedCount: claimable.length,
+      totalGold,
+      totalEnergy,
+    };
+  }
+
+  // ── Claim a single completed quest reward ────────────────────────
   async claimReward(userId: string, questId: string) {
     const qr = this.dataSource.createQueryRunner();
     await qr.connect();

@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { eventBus } from '../EventBus';
+import { soundManager } from '@/sounds/SoundManager';
 import type { FarmData, FarmPlot, UserProfile } from '@/types/game.types';
 
 const PLOT_SIZE = 96;
@@ -28,6 +29,7 @@ interface LockedSlot {
 
 export class MainFarmScene extends Phaser.Scene {
   private farmData: FarmData | null = null;
+  private ownFarmData: FarmData | null = null;
   private plotSprites: PlotSprite[] = [];
   private lockedSlot: LockedSlot | null = null;
   private guardDogTween: Phaser.Tweens.Tween | null = null;
@@ -38,6 +40,8 @@ export class MainFarmScene extends Phaser.Scene {
   private farmFrameGfx: Phaser.GameObjects.Graphics | null = null;
   private guardDogSprite: Phaser.GameObjects.Image | null = null;
   private guardDogLabel: Phaser.GameObjects.Text | null = null;
+  private guardDogHungerIcon: Phaser.GameObjects.Text | null = null;
+  private guardDogSpeechBubble: Phaser.GameObjects.Container | null = null;
   private activeTool: string = 'cursor';
   private uiBlocked = false;
   private sparkleCounter = 0;
@@ -61,7 +65,7 @@ export class MainFarmScene extends Phaser.Scene {
       fontSize: '14px', color: '#ffffff', backgroundColor: '#00000066',
       padding: { x: 8, y: 4 },
     }).setInteractive({ cursor: 'pointer' })
-      .on('pointerdown', () => { if (this.uiBlocked) return; eventBus.emit('back-to-my-farm'); })
+      .on('pointerdown', () => { if (this.uiBlocked || (this.input && !this.input.enabled) || eventBus.isOverlayActive()) return; eventBus.emit('back-to-my-farm'); })
       .setVisible(false)
       .setDepth(25);
 
@@ -77,21 +81,27 @@ export class MainFarmScene extends Phaser.Scene {
     this.rebuildGrid(6);
 
     // React ↔ Phaser event bridge
-    const unsubFarm    = eventBus.on('farm-updated',    (data) => this.onFarmUpdated(data));
-    const unsubProfile = eventBus.on('profile-updated', (p)    => this.onProfileUpdated(p));
-    const unsubVisit   = eventBus.on('visit-farm',      ({ userId, username }) => this.visitFarm(userId, username));
-    const unsubBack    = eventBus.on('back-to-my-farm', ()     => this.returnToOwnFarm());
+    const unsubFarm    = eventBus.on('farm-updated',        (data) => this.onFarmUpdated(data));
+    const unsubProfile = eventBus.on('profile-updated',     (p)    => this.onProfileUpdated(p));
+    const unsubVisit   = eventBus.on('visit-farm',          ({ userId, username }) => this.visitFarm(userId, username));
+    const unsubBack    = eventBus.on('back-to-my-farm',     ()     => this.returnToOwnFarm());
+    const unsubReturn  = eventBus.on('return-to-own-farm',  ()     => this.returnToOwnFarm());
     const unsubSteal   = eventBus.on('steal-animation',   ({ success, plotIndex }) =>
       this.playStealAnimation(plotIndex, success));
     const unsubPlant   = eventBus.on('plant-animation',   ({ plotIndex }) => this.playPlantAnimation(plotIndex));
-    const unsubHarvest = eventBus.on('harvest-animation', ({ plotIndex, gold }) => this.playHarvestAnimation(plotIndex, gold));
+    const unsubHarvest = eventBus.on('harvest-animation', ({ plotIndex, gold, cropYield }) => this.playHarvestAnimation(plotIndex, cropYield ?? gold ?? 0));
     const unsubWater   = eventBus.on('water-animation',   ({ plotIndex }) => this.playWaterAnimation(plotIndex));
     const unsubDig     = eventBus.on('dig-animation',     ({ plotIndex }) => this.playDigAnimation(plotIndex));
     const unsubTool    = eventBus.on('tool-changed', (tool) => {
       this.activeTool = tool;
       this.renderPlots();
     });
-    const unsubOverlay = eventBus.on('ui-overlay', (open) => { this.uiBlocked = open; });
+    const unsubOverlay = eventBus.on('ui-overlay', (open) => {
+      this.uiBlocked = open;
+      if (this.input) {
+        this.input.enabled = !open;
+      }
+    });
 
     // Periodic gold sparkle on ripe plots (every 2s, one random plot)
     this.time.addEvent({
@@ -102,7 +112,7 @@ export class MainFarmScene extends Phaser.Scene {
     });
 
     this.events.once('destroy', () => {
-      unsubFarm(); unsubProfile(); unsubVisit(); unsubBack();
+      unsubFarm(); unsubProfile(); unsubVisit(); unsubBack(); unsubReturn();
       unsubSteal(); unsubPlant(); unsubHarvest(); unsubWater(); unsubDig();
       unsubTool(); unsubOverlay();
     });
@@ -507,7 +517,7 @@ export class MainFarmScene extends Phaser.Scene {
       const zone = this.add.zone(x, y, PLOT_SIZE, PLOT_SIZE)
         .setInteractive({ cursor: 'pointer' })
         .setDepth(13);
-      zone.on('pointerdown', () => { if (this.uiBlocked) return; eventBus.emit('buy-plot', { cost: nextCost }); });
+      zone.on('pointerdown', () => { if (this.uiBlocked || (this.input && !this.input.enabled) || eventBus.isOverlayActive()) return; eventBus.emit('buy-plot', { cost: nextCost }); });
       zone.on('pointerover', () => { lockedBg.setAlpha(0.6); lockedBg.clearTint(); });
       zone.on('pointerout',  () => { lockedBg.setAlpha(0.35); lockedBg.setTint(0x222222); });
 
@@ -519,7 +529,7 @@ export class MainFarmScene extends Phaser.Scene {
   //  Plot interaction
   // ─────────────────────────────────────────────────────────────
   private onPlotClick(plotIndex: number) {
-    if (this.uiBlocked) return;
+    if (this.uiBlocked || (this.input && !this.input.enabled) || eventBus.isOverlayActive()) return;
     const plot = this.farmData?.plots[plotIndex];
     if (!plot) return;
 
@@ -528,30 +538,66 @@ export class MainFarmScene extends Phaser.Scene {
       if (this.activeTool === 'dig') {
         if (!plot.isEmpty) {
           eventBus.emit('plot-tool-action', { tool: 'dig', plotId: plot.id, plotIndex });
+        } else {
+          eventBus.emit('show-toast', { message: 'Plot is already empty', type: 'info' });
         }
         return;
       }
       if (this.activeTool === 'water') {
-        if (!plot.isEmpty && !plot.isRipe) {
-          eventBus.emit('plot-tool-action', { tool: 'water', plotId: plot.id, plotIndex });
-        } else if (plot.isRipe) {
-          eventBus.emit('show-toast', { message: 'Crop is ripe — harvest it!', type: 'info' });
+        if (plot.isEmpty) {
+          eventBus.emit('show-toast', { message: 'Plot is empty — plant a seed first!', type: 'info' });
+          return;
         }
+        if (plot.isRipe) {
+          eventBus.emit('show-toast', { message: 'Crop is ripe — harvest it!', type: 'info' });
+          return;
+        }
+        if (plot.wateredThisCycle && !plot.hasDrySoil) {
+          eventBus.emit('show-toast', { message: 'Soil is already moist! 💧 No water needed.', type: 'info' });
+          return;
+        }
+        eventBus.emit('plot-tool-action', { tool: 'water', plotId: plot.id, plotIndex });
         return;
       }
       if (this.activeTool === 'spray') {
-        if (!plot.isEmpty && plot.hasBugs) {
-          eventBus.emit('plot-tool-action', { tool: 'bug-spray', plotId: plot.id, plotIndex });
-        } else if (!plot.isEmpty && !plot.isRipe) {
-          // Open tier-selection modal for fertilizer
-          eventBus.emit('fertilizer-select', { plotId: plot.id, plotIndex });
+        if (plot.isEmpty) {
+          eventBus.emit('show-toast', { message: 'Plot is empty — plant a seed first!', type: 'info' });
+          return;
         }
+        if (plot.hasBugs) {
+          eventBus.emit('plot-tool-action', { tool: 'bug-spray', plotId: plot.id, plotIndex });
+          return;
+        }
+        if (plot.isRipe) {
+          eventBus.emit('show-toast', { message: 'Crop is ripe — harvest it!', type: 'info' });
+          return;
+        }
+        // Open tier-selection modal for fertilizer
+        eventBus.emit('fertilizer-select', { plotId: plot.id, plotIndex });
         return;
       }
       if (this.activeTool === 'weed-kill') {
-        if (!plot.isEmpty && plot.hasWeeds) {
-          eventBus.emit('plot-tool-action', { tool: 'weed-kill', plotId: plot.id, plotIndex });
+        if (plot.isEmpty) {
+          eventBus.emit('show-toast', { message: 'Plot is empty — plant a seed first!', type: 'info' });
+          return;
         }
+        if (plot.hasWeeds) {
+          eventBus.emit('plot-tool-action', { tool: 'weed-kill', plotId: plot.id, plotIndex });
+          return;
+        }
+        if (plot.hasBugs) {
+          eventBus.emit('show-toast', { message: 'This crop has bugs! Switch to Bug Spray.', type: 'info' });
+          return;
+        }
+        if (plot.isRipe) {
+          eventBus.emit('show-toast', { message: 'Crop is ripe — harvest it!', type: 'info' });
+          return;
+        }
+        eventBus.emit('show-toast', { message: 'No weeds on this crop!', type: 'info' });
+        return;
+      }
+      if (this.activeTool === 'steal') {
+        eventBus.emit('show-toast', { message: 'You cannot steal from your own farm! Tap Explore to visit neighbors.', type: 'info' });
         return;
       }
     }
@@ -563,8 +609,35 @@ export class MainFarmScene extends Phaser.Scene {
       else if (plot.isRipe)    action = 'harvest';
       else                     action = 'upgrade';
     } else {
+      // Neighbor farm direct helper actions
+      if (this.activeTool === 'spray') {
+        if (!plot.isEmpty && plot.hasBugs) {
+          eventBus.emit('plot-tool-action', { tool: 'bug-spray', plotId: plot.id, plotIndex });
+        } else {
+          eventBus.emit('show-toast', { message: 'This crop has no bugs to spray!', type: 'info' });
+        }
+        return;
+      }
+      if (this.activeTool === 'weed-kill') {
+        if (!plot.isEmpty && plot.hasWeeds) {
+          eventBus.emit('plot-tool-action', { tool: 'weed-kill', plotId: plot.id, plotIndex });
+        } else {
+          eventBus.emit('show-toast', { message: 'This crop has no weeds to remove!', type: 'info' });
+        }
+        return;
+      }
+      if (this.activeTool === 'water') {
+        if (!plot.isEmpty && !plot.isRipe) {
+          eventBus.emit('plot-tool-action', { tool: 'water', plotId: plot.id, plotIndex });
+        } else if (plot.isRipe) {
+          eventBus.emit('show-toast', { message: 'Crop is ripe — soil does not need water!', type: 'info' });
+        }
+        return;
+      }
+
+      // Neighbor farm: route based on active tool and plot state
       if (!plot.isEmpty && plot.isRipe && plot.stealableRemaining > 0) {
-        action = 'steal';
+        action = (this.activeTool === 'cursor' || this.activeTool === 'steal') ? 'steal' : 'attack';
       } else if (!plot.isEmpty) {
         action = 'attack';
       }
@@ -589,10 +662,9 @@ export class MainFarmScene extends Phaser.Scene {
           tint = plot.isEmpty ? 0x66ff66 : null;
           break;
         case 'water':
-          // Bright blue on dry soil plots, dim blue on moist/growing plots
-          tint = (!plot.isEmpty && !plot.isRipe && plot.hasDrySoil) ? 0x44aaff
-               : (!plot.isEmpty && !plot.isRipe)                    ? 0x8888cc
-               : null;
+          // Bright blue on plots that actually need water (dry soil or not yet watered this cycle)
+          const needsWater = !plot.isEmpty && !plot.isRipe && (!plot.wateredThisCycle || plot.hasDrySoil);
+          tint = needsWater ? (plot.hasDrySoil ? 0x33aaff : 0x66bbff) : null;
           break;
         case 'spray':
           tint = (!plot.isEmpty && plot.hasBugs)            ? 0xff4444  // has bugs → red (spray bugs)
@@ -605,8 +677,30 @@ export class MainFarmScene extends Phaser.Scene {
                : null;
           break;
       }
-    } else if (this.activeTool === 'steal' || this.activeTool === 'cursor') {
-      tint = (!plot.isEmpty && plot.isRipe && plot.stealableRemaining > 0) ? 0xff4444 : null;
+    } else {
+      // Neighbor farm tints
+      switch (this.activeTool) {
+        case 'spray':
+          tint = (!plot.isEmpty && plot.hasBugs) ? 0x44ff88 : null;
+          break;
+        case 'weed-kill':
+          tint = (!plot.isEmpty && plot.hasWeeds) ? 0x44ff88 : null;
+          break;
+        case 'water':
+          tint = (!plot.isEmpty && !plot.isRipe && (!plot.wateredThisCycle || plot.hasDrySoil)) ? 0x4488ff : null;
+          break;
+        case 'steal':
+          tint = (!plot.isEmpty && plot.isRipe && plot.stealableRemaining > 0) ? 0xff4444 : null;
+          break;
+        case 'cursor':
+        default:
+          if (!plot.isEmpty && plot.isRipe && plot.stealableRemaining > 0) {
+            tint = 0xff4444; // stealable ripe
+          } else if (!plot.isEmpty) {
+            tint = (plot.hasBugs || plot.hasWeeds) ? 0x44ff88 : 0xff8833; // green if needs help, orange if growing
+          }
+          break;
+      }
     }
 
     if (tint !== null) sprite.bg.setTint(tint);
@@ -617,21 +711,38 @@ export class MainFarmScene extends Phaser.Scene {
   //  Farm data handlers
   // ─────────────────────────────────────────────────────────────
   private onFarmUpdated(data: FarmData) {
+    if (this.isOwnFarm) {
+      this.ownFarmData = data;
+    }
     this.farmData = data;
     this.rebuildGrid(data.plots.length);
     this.renderPlots();
-    this.renderGuardDog(data.hasGuardDog, data.guardDogType);
+    this.renderGuardDog(
+      data.hasGuardDog,
+      data.guardDogType,
+      data.guardDogDefense,
+      data.guardDogLastFedAt,
+      data.guardDogId,
+    );
   }
 
-  private renderGuardDog(hasGuardDog: boolean, dogType: string | null) {
-    // Remove existing dog
+  private renderGuardDog(
+    hasGuardDog: boolean,
+    dogType: string | null,
+    defense = 0,
+    lastFedAt?: string | null,
+    dogId?: string | null,
+  ) {
+    // Remove existing dog & accessories
     if (this.guardDogSprite) { this.guardDogSprite.destroy(); this.guardDogSprite = null; }
     if (this.guardDogLabel)  { this.guardDogLabel.destroy();  this.guardDogLabel  = null; }
     if (this.guardDogTween)  { this.guardDogTween.stop();     this.guardDogTween  = null; }
+    if (this.guardDogHungerIcon) { this.guardDogHungerIcon.destroy(); this.guardDogHungerIcon = null; }
+    if (this.guardDogSpeechBubble) { this.guardDogSpeechBubble.destroy(); this.guardDogSpeechBubble = null; }
 
     if (!hasGuardDog) return;
 
-    // Position: bottom-right corner of the farm grid
+    // Position: outside the fence so it NEVER overlaps any crop plot
     const cols = 3;
     const rows = Math.max(2, Math.ceil(this.farmData!.plots.length / cols));
     const totalW = cols * PLOT_SIZE + (cols - 1) * PLOT_GAP;
@@ -639,33 +750,198 @@ export class MainFarmScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const startX = (width - totalW) / 2;
     const startY = (height - totalH) / 2 + 10;
+    const fencePad = 11;
 
-    const dogX = startX + totalW + 10 + 37;
-    const dogY = startY + totalH - 30;
+    let dogX: number;
+    let dogY: number;
+
+    if (width >= totalW + 110) {
+      // Wide screens / desktop: place to the right of the wooden frame
+      dogX = startX + totalW + 45;
+      dogY = startY + totalH - 35;
+    } else {
+      // Mobile / portrait screens: place outside the bottom-right corner of the wooden fence
+      // This is 100% clear of plot #6 (or #9, #12) and sits in the grass above the bottom dock
+      const bottomFrameY = startY + totalH + fencePad;
+      dogX = Math.min(width - 48, startX + totalW - 44);
+      dogY = Math.min(height - 85 - 34, bottomFrameY + 34);
+    }
 
     this.guardDogSprite = this.add.image(dogX, dogY, 'guard-dog')
       .setDisplaySize(74, 62)
       .setDepth(12);
 
+    // Make dog interactive
+    this.guardDogSprite.setInteractive({ useHandCursor: true });
+    this.guardDogSprite.on('pointerdown', () => {
+      this.onGuardDogTapped(dogId, dogType, defense, lastFedAt, dogX, dogY);
+    });
+
     const PET_LABEL: Record<string, string> = {
+      // NFT breeds (actual dog_type values)
+      Chihuahua: '🐕 Chihuahua', Corgi: '🦊 Corgi', Husky: '🐺 Husky',
+      Rottweiler: '🦮 Rottweiler', Doberman: '🐾 Doberman', Pitbull: '💀 Pitbull',
+      // Legacy keys
       dog_stray: '🐶 Stray', dog_beagle: '🐕 Beagle', dog_husky: '🐺 Husky',
       dog_shepherd: '🦮 Shepherd', elephant: '🐘 Elephant',
       guard_pup: '🐕 Pup', guard_hound: '🐺 Hound',
     };
-    const labelText = PET_LABEL[dogType ?? ''] ?? '🐕 Guard';
-    this.guardDogLabel = this.add.text(dogX, dogY + 36, labelText, {
-      fontSize: '11px', color: '#ffd700',
+
+    // Calculate hunger
+    const fedTime = lastFedAt ? new Date(lastFedAt).getTime() : 0;
+    const hoursSinceFed = fedTime > 0 ? (Date.now() - fedTime) / 3_600_000 : 999;
+    const isHungry = hoursSinceFed >= 24;
+    const isStarving = hoursSinceFed >= 48;
+    const effectiveDef = isStarving ? 0 : isHungry ? Math.floor(defense * 0.5) : defense;
+
+    const baseName = PET_LABEL[dogType ?? ''] ?? '🐕 Guard';
+    const defSuffix = defense > 0 ? ` (${effectiveDef}% DEF)` : '';
+    const labelText = `${baseName}${defSuffix}`;
+
+    this.guardDogLabel = this.add.text(dogX, dogY + 34, labelText, {
+      fontSize: '11px', color: isStarving ? '#ef4444' : isHungry ? '#f59e0b' : '#ffd700',
       stroke: '#000', strokeThickness: 2,
     }).setOrigin(0.5).setDepth(12);
 
+    // Floating hunger bone icon if hungry & on own farm
+    if (isHungry && this.isOwnFarm) {
+      this.guardDogHungerIcon = this.add.text(dogX + 26, dogY - 22, '🍖', {
+        fontSize: '17px',
+      }).setOrigin(0.5).setDepth(14);
+
+      this.tweens.add({
+        targets: this.guardDogHungerIcon,
+        scale: { from: 1, to: 1.25 },
+        y: '-=4',
+        duration: 650,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      });
+    }
+
     // Gentle bob animation
+    const bobTargets: (Phaser.GameObjects.Image | Phaser.GameObjects.Text)[] = [this.guardDogSprite, this.guardDogLabel];
+    if (this.guardDogHungerIcon) bobTargets.push(this.guardDogHungerIcon);
     this.guardDogTween = this.tweens.add({
-      targets: [this.guardDogSprite, this.guardDogLabel],
-      y: { value: '+=5' },
+      targets: bobTargets,
+      y: { value: '+=4' },
       duration: 900,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.easeInOut',
+    });
+  }
+
+  private onGuardDogTapped(
+    dogId?: string | null,
+    dogType?: string | null,
+    defense = 0,
+    lastFedAt?: string | null,
+    dogX = 0,
+    dogY = 0,
+  ) {
+    soundManager.play('dog_bark');
+
+    // Hop animation
+    if (this.guardDogSprite) {
+      this.tweens.add({
+        targets: this.guardDogSprite,
+        scaleX: 0.9,
+        scaleY: 1.15,
+        duration: 120,
+        yoyo: true,
+        ease: 'Back.easeOut',
+      });
+    }
+
+    // Determine speech bubble text
+    const fedTime = lastFedAt ? new Date(lastFedAt).getTime() : 0;
+    const hoursSinceFed = fedTime > 0 ? (Date.now() - fedTime) / 3_600_000 : 999;
+    const isHungry = hoursSinceFed >= 24;
+    const isStarving = hoursSinceFed >= 48;
+    const effectiveDef = isStarving ? 0 : isHungry ? Math.floor(defense * 0.5) : defense;
+
+    let speech = '';
+    if (!this.isOwnFarm) {
+      speech = `Grrr! Guarding this farm! 🐾 (${defense}% DEF)`;
+    } else if (isStarving) {
+      speech = "Woof! Starving! 🍖 Feed me! (0% DEF)";
+    } else if (isHungry) {
+      speech = `Woof! Hungry! 🍖 (-50% DEF -> ${effectiveDef}%)`;
+    } else {
+      speech = `Woof! Farm is safe! 🛡️ (${effectiveDef}% DEF)`;
+    }
+
+    this.showDogSpeechBubble(speech, dogX, dogY);
+
+    // Emit event so React opens DogStatusModal
+    eventBus.emit('dog-clicked', {
+      dogId,
+      dogType,
+      defense,
+      lastFedAt,
+      isVisiting: !this.isOwnFarm,
+    });
+  }
+
+  private showDogSpeechBubble(text: string, x: number, y: number) {
+    if (this.guardDogSpeechBubble) {
+      this.guardDogSpeechBubble.destroy();
+      this.guardDogSpeechBubble = null;
+    }
+
+    const bubble = this.add.container(x, y - 48).setDepth(30);
+    const bubbleBg = this.add.graphics();
+    const bubbleText = this.add.text(0, 0, text, {
+      fontSize: '11px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      align: 'center',
+    }).setOrigin(0.5);
+
+    const padX = 10;
+    const padY = 6;
+    const w = bubbleText.width + padX * 2;
+    const h = bubbleText.height + padY * 2;
+
+    bubbleBg.fillStyle(0x18181b, 0.95);
+    bubbleBg.lineStyle(1.5, 0xf59e0b, 0.85);
+    bubbleBg.fillRoundedRect(-w / 2, -h / 2, w, h, 8);
+    bubbleBg.strokeRoundedRect(-w / 2, -h / 2, w, h, 8);
+
+    // Pointer down triangle
+    bubbleBg.fillTriangle(0, h / 2 + 5, -5, h / 2, 5, h / 2);
+    bubbleBg.lineBetween(-5, h / 2, 0, h / 2 + 5);
+    bubbleBg.lineBetween(5, h / 2, 0, h / 2 + 5);
+
+    bubble.add([bubbleBg, bubbleText]);
+    this.guardDogSpeechBubble = bubble;
+
+    // Pop-in bounce
+    bubble.setScale(0.6);
+    this.tweens.add({
+      targets: bubble,
+      scaleX: 1,
+      scaleY: 1,
+      duration: 180,
+      ease: 'Back.easeOut',
+    });
+
+    // Auto fadeout after 2.8s
+    this.time.delayedCall(2800, () => {
+      if (this.guardDogSpeechBubble === bubble) {
+        this.tweens.add({
+          targets: bubble,
+          alpha: 0,
+          y: y - 58,
+          duration: 250,
+          onComplete: () => {
+            bubble.destroy();
+            if (this.guardDogSpeechBubble === bubble) this.guardDogSpeechBubble = null;
+          },
+        });
+      }
     });
   }
 
@@ -821,6 +1097,32 @@ export class MainFarmScene extends Phaser.Scene {
       const flash = this.add.rectangle(0, 0, this.scale.width, this.scale.height, 0x76ff03, 0.15).setOrigin(0);
       this.tweens.add({ targets: flash, alpha: 0, duration: 400, onComplete: () => flash.destroy() });
     } else {
+      soundManager.play('dog_bark');
+
+      // Animate dog lunging towards the plot if dog exists!
+      if (this.guardDogSprite) {
+        const origX = this.guardDogSprite.x;
+        const origY = this.guardDogSprite.y;
+        this.tweens.add({
+          targets: [this.guardDogSprite, this.guardDogLabel],
+          x: sprite.bg.x + 25,
+          y: sprite.bg.y + 15,
+          duration: 180,
+          yoyo: true,
+          ease: 'Back.easeIn',
+          onComplete: () => {
+            if (this.guardDogSprite) {
+              this.guardDogSprite.x = origX;
+              this.guardDogSprite.y = origY;
+            }
+            if (this.guardDogLabel) {
+              this.guardDogLabel.x = origX;
+              this.guardDogLabel.y = origY + 34;
+            }
+          },
+        });
+      }
+
       const emitter = this.add.particles(sprite.bg.x, sprite.bg.y, 'bite-particle', {
         speed: { min: 40, max: 100 },
         lifespan: 500,
@@ -867,26 +1169,26 @@ export class MainFarmScene extends Phaser.Scene {
     });
   }
 
-  playHarvestAnimation(plotIndex: number, gold: number) {
+  playHarvestAnimation(plotIndex: number, yieldAmount: number) {
     const sprite = this.plotSprites[plotIndex];
     if (!sprite) return;
     const { x, y } = sprite.bg;
 
-    // Gold coin particles flying up
-    const coins = this.add.particles(x, y, 'spark', {
+    // Green crop particles flying up
+    const crops = this.add.particles(x, y, 'spark', {
       speed: { min: 80, max: 160 },
       angle: { min: -130, max: -50 },
       scale: { start: 1.4, end: 0 },
       lifespan: 800,
       quantity: 8,
       gravityY: 180,
-      tint: 0xffd700,
+      tint: 0x4ade80,
     }).setDepth(20);
-    this.time.delayedCall(900, () => coins.destroy());
+    this.time.delayedCall(900, () => crops.destroy());
 
-    // "+XXG" floating text
-    const popup = this.add.text(x, y - 15, `+${Math.round(gold)}G`, {
-      fontSize: '20px', color: '#ffd700', fontStyle: 'bold',
+    // "+XX 🌾" floating text
+    const popup = this.add.text(x, y - 15, `+${Math.round(yieldAmount)} 🌾`, {
+      fontSize: '20px', color: '#4ade80', fontStyle: 'bold',
       stroke: '#000000', strokeThickness: 3,
     }).setOrigin(0.5).setDepth(25);
     this.tweens.add({
@@ -1002,5 +1304,18 @@ export class MainFarmScene extends Phaser.Scene {
     this.farmSign.setText('🏡 My Farm');
     this.backBtn.setVisible(false);
     this.currentRenderKey = '';
+
+    if (this.ownFarmData) {
+      this.farmData = this.ownFarmData;
+      this.rebuildGrid(this.ownFarmData.plots.length);
+      this.renderPlots();
+      this.renderGuardDog(
+        this.ownFarmData.hasGuardDog,
+        this.ownFarmData.guardDogType,
+        this.ownFarmData.guardDogDefense,
+        this.ownFarmData.guardDogLastFedAt,
+        this.ownFarmData.guardDogId,
+      );
+    }
   }
 }

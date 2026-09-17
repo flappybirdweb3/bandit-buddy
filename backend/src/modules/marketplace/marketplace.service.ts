@@ -3,7 +3,7 @@ import {
   OnModuleInit, OnModuleDestroy,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, DataSource, LessThan } from 'typeorm';
+import { Repository, DataSource, LessThan, IsNull, Not } from 'typeorm';
 import { ethers } from 'ethers';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
@@ -14,10 +14,13 @@ import { User } from '../user/entities/user.entity';
 import { UserItem } from '../user/entities/user-item.entity';
 import { NftGuardDog } from '../farm/entities/nft-guard-dog.entity';
 import { CreateListingDto, CreateItemListingDto, GetListingsQueryDto } from './dto/marketplace.dto';
+import { EventsGateway } from './events.gateway';
+import { NotificationService } from '../notification/notification.service';
 
 // BanditMarket v2 ABI — matches deployed contract events exactly
 const BANDIT_MARKET_ABI = [
   'event NFTOrderFilled(address indexed buyer, address indexed seller, address indexed nftContract, uint256 tokenId, uint256 amount, uint256 priceFarm, uint256 fee)',
+  'event NFTOrderFilledBNB(address indexed buyer, address indexed seller, address indexed nftContract, uint256 tokenId, uint256 amount, uint256 priceBNB, uint256 fee)',
   'event OffchainItemSold(address indexed buyer, address indexed seller, string itemType, uint256 quantity, uint256 priceFarm, uint256 fee, uint256 nonce)',
   'event OrderCancelled(address indexed seller, uint256 nonce)',
 ];
@@ -58,6 +61,8 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly config: ConfigService,
+    private readonly eventsGateway: EventsGateway,
+    private readonly notificationService: NotificationService,
   ) {}
 
   onModuleInit() {
@@ -89,24 +94,30 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     // backend had a mainnet primary and testnet fallbacks; with `quorum: 1` the event
     // sweep could read logs from either chain depending on which node answered first.
     const defaultPrimary = chainId === 97
-      ? 'https://bsc-testnet-rpc.publicnode.com'
+      ? 'https://data-seed-prebsc-1-s1.binance.org:8545/'
       : 'https://bsc-dataseed1.binance.org/';
     const primary = this.config.get<string>('web3.bscRpcUrl') ?? defaultPrimary;
 
     const fallbacks = chainId === 97
-      ? ['https://bsc-testnet-rpc.publicnode.com', 'https://endpoints.omniatech.io/v1/bsc/testnet/public']
+      ? ['https://bsc-testnet.publicnode.com', 'https://data-seed-prebsc-2-s1.binance.org:8545/']
       : ['https://bsc-dataseed2.binance.org/', 'https://bsc-dataseed3.binance.org/'];
 
     this.logger.log(`Marketplace RPC chain id: ${chainId}`);
 
+    const network = ethers.Network.from(chainId);
+    const uniqueUrls = Array.from(new Set([primary, ...fallbacks]));
     this.provider = new ethers.FallbackProvider(
-      [primary, ...fallbacks].map((url, i) => ({
-        provider: new ethers.JsonRpcProvider(url),
-        priority: i + 1,
-        stallTimeout: 2000,
-        weight: 1,
-      })),
-      undefined,
+      uniqueUrls.map((url, i) => {
+        const req = new ethers.FetchRequest(url);
+        req.timeout = 5000;
+        return {
+          provider: new ethers.JsonRpcProvider(req, network, { polling: false, staticNetwork: network }),
+          priority: i + 1,
+          stallTimeout: 2000,
+          weight: 1,
+        };
+      }),
+      network,
       { quorum: 1 },
     );
     this.marketContract = new ethers.Contract(contractAddress, BANDIT_MARKET_ABI, this.provider);
@@ -138,6 +149,15 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
           await this.handleNFTOrderFilled(txHash, logIndex, seller, buyer, nftContract, Number(tokenId));
         } catch (err: any) {
           this.logger.error(`NFTOrderFilled handler: ${err.message}`);
+        }
+      });
+
+      this.wssContract.on('NFTOrderFilledBNB', async (buyer, seller, nftContract, tokenId, _a, _p, _f, event) => {
+        try {
+          const { txHash, logIndex } = MarketplaceService.eventRef(event);
+          await this.handleNFTOrderFilled(txHash, logIndex, seller, buyer, nftContract, Number(tokenId));
+        } catch (err: any) {
+          this.logger.error(`NFTOrderFilledBNB handler: ${err.message}`);
         }
       });
 
@@ -201,7 +221,7 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
   // ── NFTOrderFilled handler (Guard Dogs) ──────────────────────────────────────
 
   private async handleNFTOrderFilled(
-    txHash: string, logIndex: number, _seller: string, _buyer: string,
+    txHash: string, logIndex: number, sellerWallet: string, buyerWallet: string,
     nftContract: string, tokenId: number,
   ): Promise<void> {
     if (!txHash) throw new Error('NFTOrderFilled: missing transaction hash');
@@ -226,31 +246,92 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const listing = await manager
+      // Resolve seller to ensure we only match the actual seller's listing
+      const seller = sellerWallet
+        ? await manager.findOne(User, { where: { walletAddress: sellerWallet.toLowerCase() } })
+        : null;
+
+      const buyer = buyerWallet
+        ? await manager.findOne(User, { where: { walletAddress: buyerWallet.toLowerCase() } })
+        : null;
+
+      const query = manager
         .createQueryBuilder(MarketplaceListing, 'l')
-        .where('l.nft_contract = :nftContract AND l.token_id = :tokenId AND l.status = :status', {
+        .where('l.nft_contract ILIKE :nftContract AND l.token_id = :tokenId AND l.status = :status', {
           nftContract, tokenId, status: 'active',
-        })
-        .setLock('pessimistic_write')
-        .getOne();
+        });
+
+      if (seller) {
+        query.andWhere('l.seller_id = :sellerId', { sellerId: seller.id });
+      }
+
+      const listing = await query.setLock('pessimistic_write').getOne();
 
       if (!listing) {
         // Legitimate no-op: the contract already moved the NFT, so a trade with no DB
         // listing (direct P2P sale) has nothing to book. Marking the event processed is
         // correct — there is no delivery owed.
-        this.logger.warn(`NFTOrderFilled: no active listing nftContract=${nftContract} tokenId=${tokenId}`);
+        this.logger.warn(`NFTOrderFilled: no active listing nftContract=${nftContract} tokenId=${tokenId} seller=${sellerWallet}`);
         return;
       }
 
       await manager.update(MarketplaceListing, listing.id, {
-        status: 'filled', filledAt: new Date(), txHash,
+        status: 'filled',
+        buyerId: buyer?.id ?? null,
+        filledAt: new Date(),
+        txHash,
       });
 
-      this.logger.log(`NFTOrderFilled: tokenId=${tokenId} tx=${txHash}#${logIndex}`);
+      // Update the sold dog record
+      const soldDog = await manager.findOne(NftGuardDog, {
+        where: { listingId: listing.id },
+      });
+      if (soldDog) {
+        if (buyer) {
+          await manager.update(NftGuardDog, { id: soldDog.id }, {
+            ownerId: buyer.id,
+            listingId: null,
+            isGuarding: false,
+            isActive: true,
+          });
+        } else {
+          await manager.update(NftGuardDog, { id: soldDog.id }, {
+            listingId: null,
+            isActive: false,
+            isGuarding: false,
+          });
+        }
+      }
+
+      if (seller) {
+        const priceDisplay = `${Number(listing.priceFarm || 0).toLocaleString()} FARM`;
+
+        this.eventsGateway.notifyTradeFilled(seller.id, {
+          itemType: 'Guard Dog NFT',
+          quantity: 1,
+          price: String(listing.priceFarm || 0),
+          priceFormatted: priceDisplay,
+          buyerAddress: buyerWallet,
+          sellerUserId: seller.id,
+          txHash,
+          isNFT: true,
+        });
+
+        void this.notificationService.notifyItemSold(
+          seller.id,
+          'Guard Dog NFT',
+          1,
+          priceDisplay,
+          buyer?.username ?? undefined,
+          seller.notificationsEnabled && seller.telegramId ? Number(seller.telegramId) : undefined,
+        ).catch((err) => this.logger.warn(`Failed to notify seller for dog sale: ${err.message}`));
+      }
+
+      this.logger.log(`NFTOrderFilled: tokenId=${tokenId} seller=${sellerWallet} buyer=${buyerWallet} tx=${txHash}#${logIndex}`);
     });
   }
 
-  // ── OffchainItemSold handler (Crates / Kính Lúp / Master Key) ───────────────
+  // ── OffchainItemSold handler (Crates / Magnifying Glass / Master Key) ─────────
 
   private async handleOffchainItemSold(
     txHash: string, logIndex: number, buyerWallet: string, sellerWallet: string,
@@ -291,16 +372,26 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         throw new Error(`OffchainItemSold: buyer wallet ${buyerWallet} not registered`);
       }
 
-      // Find active listing (lock row). buyListing() only hands out an order signature
-      // that references a persisted listing, so a missing listing here is a genuine
-      // anomaly — retry it rather than silently marking the event done.
-      const listing = await manager
+      // Find active listing matching seller, itemType AND nonce (lock row).
+      // Matches exact nonce first to avoid cross-listing confusion when a seller has multiple listings of same item.
+      let listing = await manager
         .createQueryBuilder(MarketplaceListing, 'l')
-        .where('l.seller_id = :sellerId AND l.item_type = :itemType AND l.status = :status', {
-          sellerId: seller.id, itemType, status: 'active',
+        .where('l.seller_id = :sellerId AND l.item_type = :itemType AND l.nonce = :nonce AND l.status = :status', {
+          sellerId: seller.id, itemType, nonce, status: 'active',
         })
         .setLock('pessimistic_write')
         .getOne();
+
+      // Fallback in case nonce was not recorded on legacy listing
+      if (!listing) {
+        listing = await manager
+          .createQueryBuilder(MarketplaceListing, 'l')
+          .where('l.seller_id = :sellerId AND l.item_type = :itemType AND l.status = :status', {
+            sellerId: seller.id, itemType, status: 'active',
+          })
+          .setLock('pessimistic_write')
+          .getOne();
+      }
 
       if (!listing) {
         throw new Error(
@@ -311,8 +402,8 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       // Transfer item: deduct from seller, add to buyer
       await manager.query(
         `UPDATE user_items
-         SET quantity        = quantity        - $1,
-             locked_quantity = locked_quantity - $1
+         SET quantity        = GREATEST(0, quantity - $1),
+             locked_quantity = GREATEST(0, locked_quantity - $1)
          WHERE user_id = $2 AND item_type = $3`,
         [quantity, seller.id, itemType],
       );
@@ -327,6 +418,30 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       await manager.update(MarketplaceListing, listing.id, {
         status: 'filled', buyerId: buyer.id, filledAt: new Date(), txHash,
       });
+
+      if (seller) {
+        const priceDisplay = `${Number(listing.priceFarm || 0).toLocaleString()} FARM`;
+
+        this.eventsGateway.notifyTradeFilled(seller.id, {
+          itemType,
+          quantity,
+          price: String(listing.priceFarm || 0),
+          priceFormatted: priceDisplay,
+          buyerAddress: buyerWallet,
+          sellerUserId: seller.id,
+          txHash,
+          isNFT: false,
+        });
+
+        void this.notificationService.notifyItemSold(
+          seller.id,
+          itemType,
+          quantity,
+          priceDisplay,
+          buyer?.username ?? undefined,
+          seller.notificationsEnabled && seller.telegramId ? Number(seller.telegramId) : undefined,
+        ).catch((err) => this.logger.warn(`Failed to notify seller for item sale: ${err.message}`));
+      }
 
       this.logger.log(`OffchainItemSold: ${itemType} ×${quantity} → ${buyerWallet} tx=${txHash}#${logIndex}`);
     });
@@ -350,12 +465,13 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       for (let start = fromBlock; start <= currentBlock; start += BLOCK_BATCH_SIZE) {
         const end = Math.min(start + BLOCK_BATCH_SIZE - 1, currentBlock);
 
-        const [nftEvents, offchainEvents] = await Promise.all([
+        const [nftEvents, nftBnbEvents, offchainEvents] = await Promise.all([
           this.marketContract.queryFilter(this.marketContract.filters.NFTOrderFilled(), start, end),
+          this.marketContract.queryFilter(this.marketContract.filters.NFTOrderFilledBNB(), start, end),
           this.marketContract.queryFilter(this.marketContract.filters.OffchainItemSold(), start, end),
         ]);
 
-        for (const ev of nftEvents) {
+        for (const ev of [...nftEvents, ...nftBnbEvents]) {
           if (!('args' in ev)) continue;
           const { buyer, seller, nftContract, tokenId } = (ev as ethers.EventLog).args;
           const { txHash, logIndex } = MarketplaceService.eventRef(ev);
@@ -390,41 +506,85 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     const deadline = new Date(dto.deadline);
     if (deadline <= new Date()) throw new BadRequestException('Deadline must be in the future');
 
-    const guardingDog = await this.dataSource.manager.findOne(NftGuardDog, {
-      where: { ownerId: userId, tokenId: dto.tokenId, source: 'nft', isActive: true, isGuarding: true },
-    });
-    if (guardingDog) {
-      throw new BadRequestException({
-        error: 'DOG_IS_GUARDING',
-        message: 'Cannot sell a dog that is currently guarding the farm. Unequip it first in Nhà Kho → Chuồng Chó.',
-      });
-    }
-
+    // BanditMarket.sol tracks used nonces strictly per-seller across all their orders
     const lastListing = await this.listingRepo.findOne({
-      where: { sellerId: userId, nftContract: dto.nftContract, tokenId: dto.tokenId },
+      where: { sellerId: userId },
       order: { nonce: 'DESC' },
     });
     const nonce = (lastListing?.nonce ?? -1) + 1;
 
     this.verifyNFTEip712Sig(user.walletAddress, dto, nonce);
 
-    const existing = await this.listingRepo.findOne({
-      where: { nftContract: dto.nftContract, tokenId: dto.tokenId, status: 'active' },
-    });
-    if (existing) throw new BadRequestException('An active listing already exists for this NFT. Cancel it first.');
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+    try {
+      // Find an available dog of this breed in storage (not guarding and not already listed)
+      const availableDog = await qr.manager.findOne(NftGuardDog, {
+        where: {
+          ownerId: userId,
+          tokenId: dto.tokenId,
+          source: 'nft',
+          isActive: true,
+          isGuarding: false,
+          listingId: IsNull(),
+        },
+        lock: { mode: 'pessimistic_write' },
+      });
 
-    return this.listingRepo.save(this.listingRepo.create({
-      sellerId: userId,
-      assetType: 'nft',
-      nftContract: dto.nftContract,
-      tokenId: dto.tokenId,
-      quantity: dto.amount ?? 1,
-      priceFarm: dto.priceFarm,
-      deadline,
-      nonce,
-      eip712Sig: dto.eip712Sig,
-      status: 'active',
-    }));
+      if (!availableDog) {
+        const guardingCount = await qr.manager.count(NftGuardDog, {
+          where: { ownerId: userId, tokenId: dto.tokenId, source: 'nft', isActive: true, isGuarding: true },
+        });
+        const listedCount = await qr.manager.count(NftGuardDog, {
+          where: { ownerId: userId, tokenId: dto.tokenId, source: 'nft', isActive: true, listingId: Not(IsNull()) },
+        });
+
+        if (guardingCount > 0 && listedCount === 0) {
+          throw new BadRequestException({
+            error: 'DOG_IS_GUARDING',
+            message: 'All your dogs of this breed are currently guarding the farm. Move one to storage first in Storage → Dog Kennel to sell it.',
+          });
+        }
+        if (listedCount > 0) {
+          throw new BadRequestException({
+            error: 'ALL_STORED_DOGS_LISTED',
+            message: `All available stored dogs of this breed are already listed (${listedCount}). Cancel an existing listing or move more dogs to storage first.`,
+          });
+        }
+        throw new BadRequestException('You do not own any dogs of this breed in storage to sell.');
+      }
+
+      const listing = await qr.manager.save(
+        MarketplaceListing,
+        qr.manager.create(MarketplaceListing, {
+          sellerId: userId,
+          assetType: 'nft',
+          nftContract: dto.nftContract,
+          tokenId: dto.tokenId,
+          quantity: dto.amount ?? 1,
+          priceFarm: dto.priceFarm,
+          deadline,
+          nonce,
+          eip712Sig: dto.eip712Sig,
+          status: 'active',
+        }),
+      );
+
+      // Link dog to this listing and ensure it cannot guard while listed
+      await qr.manager.update(NftGuardDog, { id: availableDog.id }, {
+        listingId: listing.id,
+        isGuarding: false,
+      });
+
+      await qr.commitTransaction();
+      return listing;
+    } catch (err) {
+      await qr.rollbackTransaction();
+      throw err;
+    } finally {
+      await qr.release();
+    }
   }
 
   // ── user_items listing ────────────────────────────────────────────────────────
@@ -578,15 +738,39 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
         createdAt: l.createdAt,
         eip712Sig: l.eip712Sig,
         nonce: l.nonce,
+        status: l.status,
       })),
     };
   }
 
   async getMyListings(userId: string) {
-    return this.listingRepo.find({
+    // Opportunistically reconcile any expired listings so locked quantities are immediately restored
+    await this.expireListings().catch((err) => {
+      this.logger.warn(`expireListings error in getMyListings: ${err.message}`);
+    });
+
+    const listings = await this.listingRepo.find({
       where: { sellerId: userId },
+      relations: ['seller'],
       order: { createdAt: 'DESC' },
     });
+    return listings.map((l) => ({
+      id: l.id,
+      assetType: l.assetType,
+      seller: l.seller?.username ?? 'You',
+      sellerId: l.sellerId,
+      nftContract: l.nftContract,
+      tokenId: l.tokenId,
+      itemType: l.itemType,
+      quantity: Number(l.quantity),
+      pricePerUnit: l.pricePerUnit ? Number(l.pricePerUnit) : null,
+      priceFarm: Number(l.priceFarm),
+      deadline: l.deadline,
+      createdAt: l.createdAt,
+      eip712Sig: l.eip712Sig,
+      nonce: l.nonce,
+      status: l.status,
+    }));
   }
 
   async cancelListing(userId: string, listingId: string) {
@@ -602,12 +786,15 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       await qr.manager.update(MarketplaceListing, listingId, { status: 'cancelled' });
 
       if (listing.assetType === 'user_items' && listing.itemType) {
+        const unlockQty = Math.floor(Number(listing.quantity));
         await qr.manager.query(
           `UPDATE user_items
            SET locked_quantity = GREATEST(0, locked_quantity - $1)
            WHERE user_id = $2 AND item_type = $3`,
-          [listing.quantity, userId, listing.itemType],
+          [unlockQty, userId, listing.itemType],
         );
+      } else if (listing.assetType === 'nft') {
+        await qr.manager.update(NftGuardDog, { listingId: listing.id }, { listingId: null });
       }
 
       await qr.commitTransaction();
@@ -632,10 +819,10 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Listing has expired');
     }
 
-    const buyer = await this.userRepo.findOne({ where: { id: buyerId } });
-    if (!buyer?.walletAddress) throw new BadRequestException('Link a BSC wallet to buy');
-
     if (listing.assetType === 'nft') {
+      const buyer = await this.userRepo.findOne({ where: { id: buyerId } });
+      if (!buyer?.walletAddress) throw new BadRequestException('Link a BSC wallet to buy NFTs');
+
       // Mark intent — actual settlement happens via NFTOrderFilled event
       await this.listingRepo.update(listingId, { buyerId });
       return {
@@ -656,27 +843,97 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    // user_items: return order data for buyOffchainItem() on-chain.
-    // Settlement will be handled by handleOffchainItemSold() after the event fires.
-    await this.listingRepo.update(listingId, { buyerId });
-    return {
-      message: 'Order matched. Call buyOffchainItem() on-chain to complete purchase.',
-      assetType: 'user_items',
-      fn: 'buyOffchainItem',
-      order: {
-        seller:    listing.seller.walletAddress,
-        itemType:  listing.itemType,
-        quantity:  Number(listing.quantity),
-        priceFarm: ethers.parseEther(String(listing.priceFarm)).toString(),
-        nonce:     listing.nonce,
-        deadline:  Math.floor(listing.deadline.getTime() / 1000),
-        signature: listing.eip712Sig,
-      },
-      contractAddress: this.config.get<string>('web3.marketContractAddress') ?? '',
-    };
+    // ── user_items: Instant in-game settlement with GOLD ──
+    const qr = this.dataSource.createQueryRunner();
+    await qr.connect();
+    await qr.startTransaction();
+    try {
+      const liveListing = await qr.manager
+        .createQueryBuilder(MarketplaceListing, 'l')
+        .where('l.id = :id AND l.status = :status', { id: listingId, status: 'active' })
+        .setLock('pessimistic_write')
+        .getOne();
+
+      if (!liveListing) throw new BadRequestException('Listing is no longer available');
+      if (new Date() > liveListing.deadline) {
+        await qr.manager.update(MarketplaceListing, listingId, { status: 'cancelled' });
+        throw new BadRequestException('Listing has expired');
+      }
+
+      const buyer = await qr.manager
+        .createQueryBuilder(User, 'u')
+        .where('u.id = :id', { id: buyerId })
+        .setLock('pessimistic_write')
+        .getOne();
+      if (!buyer) throw new NotFoundException('Buyer not found');
+
+      const priceGold = Number(liveListing.priceFarm);
+      if (buyer.goldBalance < priceGold) {
+        throw new BadRequestException(
+          `Not enough GOLD. Price is ${priceGold.toLocaleString()} GOLD, but you only have ${Math.floor(buyer.goldBalance).toLocaleString()} GOLD.`,
+        );
+      }
+
+      const sellerItem = await qr.manager
+        .createQueryBuilder(UserItem, 'i')
+        .where('i.user_id = :sellerId AND i.item_type = :itemType', {
+          sellerId: liveListing.sellerId,
+          itemType: liveListing.itemType,
+        })
+        .setLock('pessimistic_write')
+        .getOne();
+
+      if (!sellerItem || sellerItem.quantity < liveListing.quantity) {
+        throw new BadRequestException('Seller no longer possesses this item');
+      }
+
+      // Transfer GOLD: buyer -> seller
+      await qr.manager.decrement(User, { id: buyerId }, 'goldBalance', priceGold);
+      await qr.manager.increment(User, { id: liveListing.sellerId }, 'goldBalance', priceGold);
+
+      const itemQty = Math.floor(Number(liveListing.quantity));
+
+      // Transfer ITEM: seller -> buyer
+      await qr.manager.query(
+        `UPDATE user_items
+         SET quantity = GREATEST(0, quantity - $1),
+             locked_quantity = GREATEST(0, locked_quantity - $1)
+         WHERE user_id = $2 AND item_type = $3`,
+        [itemQty, liveListing.sellerId, liveListing.itemType],
+      );
+
+      await qr.manager.query(
+        `INSERT INTO user_items (user_id, item_type, quantity, locked_quantity)
+         VALUES ($1, $2, $3, 0)
+         ON CONFLICT (user_id, item_type)
+         DO UPDATE SET quantity = user_items.quantity + $3`,
+        [buyerId, liveListing.itemType, itemQty],
+      );
+
+      // Mark listing filled
+      await qr.manager.update(MarketplaceListing, listingId, {
+        status: 'filled',
+        buyerId,
+        filledAt: new Date(),
+      });
+
+      await qr.commitTransaction();
+
+      return {
+        message: `Successfully bought ${liveListing.quantity}x ${liveListing.itemType} for ${priceGold} GOLD`,
+        itemType: liveListing.itemType,
+        quantity: Number(liveListing.quantity),
+        goldSpent: priceGold,
+      };
+    } catch (err) {
+      await qr.rollbackTransaction();
+      throw err;
+    } finally {
+      await qr.release();
+    }
   }
 
-  @Cron('0 * * * *')
+  @Cron('* * * * *')
   async expireListings(): Promise<void> {
     const expired = await this.listingRepo.find({
       where: { status: 'active', deadline: LessThan(new Date()) },
@@ -689,15 +946,19 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
       try {
         await qr.manager.update(MarketplaceListing, listing.id, { status: 'cancelled' });
         if (listing.assetType === 'user_items' && listing.itemType) {
+          const unlockQty = Math.floor(Number(listing.quantity));
           await qr.manager.query(
             `UPDATE user_items
              SET locked_quantity = GREATEST(0, locked_quantity - $1)
              WHERE user_id = $2 AND item_type = $3`,
-            [listing.quantity, listing.sellerId, listing.itemType],
+            [unlockQty, listing.sellerId, listing.itemType],
           );
+        } else if (listing.assetType === 'nft') {
+          await qr.manager.update(NftGuardDog, { listingId: listing.id }, { listingId: null });
         }
         await qr.commitTransaction();
-      } catch {
+      } catch (err: any) {
+        this.logger.error(`expireListings failed for listing ${listing.id}: ${err.message}`);
         await qr.rollbackTransaction();
       } finally {
         await qr.release();
@@ -705,12 +966,15 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async getNextNonce(userId: string, nftContract: string, tokenId: number): Promise<{ nonce: number }> {
+  async getNextNonce(userId: string, _nftContract?: string, _tokenId?: number): Promise<{ nonce: number; marketContractAddress: string }> {
     const lastListing = await this.listingRepo.findOne({
-      where: { sellerId: userId, nftContract, tokenId },
+      where: { sellerId: userId },
       order: { nonce: 'DESC' },
     });
-    return { nonce: (lastListing?.nonce ?? -1) + 1 };
+    return {
+      nonce: (lastListing?.nonce ?? -1) + 1,
+      marketContractAddress: this.config.get<string>('web3.marketContractAddress') ?? '',
+    };
   }
 
   // ── EIP-712 verification (NFT orders — BanditMarket v2) ──────────────────────
@@ -750,6 +1014,9 @@ export class MarketplaceService implements OnModuleInit, OnModuleDestroy {
 
       const recovered = ethers.verifyTypedData(domain, types, value, dto.eip712Sig);
       if (recovered.toLowerCase() !== sellerAddress.toLowerCase()) {
+        this.logger.warn(
+          `EIP-712 signature mismatch: recovered=${recovered} expected=${sellerAddress} verifyingContract=${domain.verifyingContract}`
+        );
         throw new BadRequestException('Invalid EIP-712 signature — signer does not match wallet');
       }
     } catch (err: any) {

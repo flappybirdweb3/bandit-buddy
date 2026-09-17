@@ -31,7 +31,7 @@ contract GuildStaking is ReentrancyGuard, Ownable, Pausable {
 
     IERC20 public immutable farmToken;
 
-    uint256 public minEliteStake  = 500 * 10 ** 18;  // 500 FARM to reach Elite
+    uint256 public minEliteStake  = 1000 * 10 ** 18;  // 1,000 FARM to reach Elite / Premium tier
     uint256 public constant UNSTAKE_DELAY = 7 days;
 
     struct StakeInfo {
@@ -43,11 +43,15 @@ contract GuildStaking is ReentrancyGuard, Ownable, Pausable {
     mapping(bytes32 => mapping(address => StakeInfo)) public stakes;
     // guildId => total staked
     mapping(bytes32 => uint256) public guildTotalStaked;
+    // guildId => total accumulated harvest tax
+    mapping(bytes32 => uint256) public guildHarvestTax;
 
     event Staked(bytes32 indexed guildId, address indexed user, uint256 amount);
     event UnstakeRequested(bytes32 indexed guildId, address indexed user, uint256 amount);
     event Unstaked(bytes32 indexed guildId, address indexed user, uint256 amount);
     event HarvestTaxDeposited(bytes32 indexed guildId, address indexed depositor, uint256 amount);
+    event HarvestTaxClaimed(bytes32 indexed guildId, address indexed recipient, uint256 amount);
+    event GuildRewardClaimed(bytes32 indexed guildId, address indexed recipient, uint256 amount);
     event MinEliteStakeUpdated(uint256 newMin);
 
     error ZeroAmount();
@@ -55,12 +59,30 @@ contract GuildStaking is ReentrancyGuard, Ownable, Pausable {
     error UnstakeNotRequested();
     error UnstakeLocked();
     error NothingToUnstake();
+    error ZeroAddress();
+    error InsufficientTaxBalance();
 
     constructor(address _farmToken, address _owner) Ownable(_owner) {
+        if (_farmToken == address(0) || _owner == address(0)) revert ZeroAddress();
         farmToken = IERC20(_farmToken);
     }
 
     // ── Core ─────────────────────────────────────────────────────────────────
+
+    /**
+     * @notice Stake 1,000 FARM to create / upgrade a guild to Elite (Premium) tier.
+     */
+    function stakeToCreateGuild(bytes32 guildId) external nonReentrant whenNotPaused {
+        uint256 amount = minEliteStake;
+        farmToken.safeTransferFrom(msg.sender, address(this), amount);
+
+        StakeInfo storage s = stakes[guildId][msg.sender];
+        s.amount += amount;
+        s.unstakedAt = 0; // cancel any pending unstake
+        guildTotalStaked[guildId] += amount;
+
+        emit Staked(guildId, msg.sender, amount);
+    }
 
     function stake(bytes32 guildId, uint256 amount) external nonReentrant whenNotPaused {
         if (amount == 0) revert ZeroAmount();
@@ -97,13 +119,40 @@ contract GuildStaking is ReentrancyGuard, Ownable, Pausable {
     }
 
     /**
-     * Harvest tax deposited by backend (optional on-chain settlement).
-     * Stays in contract; guild owner can call distributeTax off-chain.
+     * Harvest tax deposited by backend (on-chain settlement).
+     * Tracks per-guild accumulated tax balance.
      */
     function depositHarvestTax(bytes32 guildId, uint256 amount) external nonReentrant whenNotPaused {
         if (amount == 0) revert ZeroAmount();
         farmToken.safeTransferFrom(msg.sender, address(this), amount);
+        guildHarvestTax[guildId] += amount;
         emit HarvestTaxDeposited(guildId, msg.sender, amount);
+    }
+
+    /**
+     * @notice Distribute or claim accumulated harvest tax for a guild.
+     * Callable by contract owner (admin/governance).
+     */
+    function claimHarvestTax(bytes32 guildId, address recipient, uint256 amount) external onlyOwner nonReentrant {
+        if (recipient == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        if (guildHarvestTax[guildId] < amount) revert InsufficientTaxBalance();
+
+        guildHarvestTax[guildId] -= amount;
+        farmToken.safeTransfer(recipient, amount);
+        emit HarvestTaxClaimed(guildId, recipient, amount);
+    }
+
+    /**
+     * @notice Claim guild tree reward when the World Tree is ripe.
+     * Callable by contract owner / backend relayer upon Proof of Contribution verification.
+     */
+    function claimGuildReward(bytes32 guildId, address recipient, uint256 amount) external onlyOwner nonReentrant {
+        if (recipient == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+
+        farmToken.safeTransfer(recipient, amount);
+        emit GuildRewardClaimed(guildId, recipient, amount);
     }
 
     // ── View ─────────────────────────────────────────────────────────────────

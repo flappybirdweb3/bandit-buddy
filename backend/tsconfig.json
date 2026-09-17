@@ -1,4 +1,5 @@
 {
+  "exclude": ["test", "dist"],
   "compilerOptions": {
     "module": "commonjs",
     "declaration": true,

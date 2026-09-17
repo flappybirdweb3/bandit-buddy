@@ -9,16 +9,29 @@ import { NftGuardDog } from '../farm/entities/nft-guard-dog.entity';
 import { FarmBuilding } from '../farm/entities/farm-building.entity';
 import { User } from '../user/entities/user.entity';
 import { UserItem } from '../user/entities/user-item.entity';
+import { Subscription } from '../guild/entities/subscription.entity';
 import { NotificationModule } from '../notification/notification.module';
 import { QuestModule } from '../quest/quest.module';
+import { UserModule } from '../user/user.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([FarmPlot, SeedConfig, StealLog, NftGuardDog, FarmBuilding, User, UserItem]),
+    TypeOrmModule.forFeature([
+      FarmPlot,
+      SeedConfig,
+      StealLog,
+      NftGuardDog,
+      FarmBuilding,
+      User,
+      UserItem,
+      Subscription,
+    ]),
     NotificationModule,
     QuestModule,
+    UserModule,
   ],
   controllers: [ActionController],
   providers: [ActionService],
 })
 export class ActionModule {}
+

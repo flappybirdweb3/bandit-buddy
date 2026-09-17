@@ -23,15 +23,17 @@ export function HarvestAllButton() {
     setLoading(true);
     try {
       const res = await api.harvestAll();
-      soundManager.play('coin');
+      soundManager.play('harvest');
       if (res.levelUp) {
         eventBus.emit('level-up', { newLevel: res.newLevel });
       }
-      setToast(`+${res.totalGold.toFixed(0)}G — ${res.harvested} crops harvested!`);
+      const units = (res as any).totalCrops ?? (res as any).totalGold ?? 0;
+      setToast(`+${Math.floor(units)} crops moved to Storage!`);
       qc.invalidateQueries({ queryKey: ['myFarm'] });
       qc.invalidateQueries({ queryKey: ['profile'] });
       qc.invalidateQueries({ queryKey: ['dailyQuests'] });
-      setTimeout(() => setToast(null), 3000);
+      qc.invalidateQueries({ queryKey: ['barnData'] });
+      setTimeout(() => setToast(null), 4000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Harvest failed';
       setToast(msg);
@@ -58,10 +60,16 @@ export function HarvestAllButton() {
       </button>
 
       {toast && createPortal(
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[300] pointer-events-none">
-          <div className="glass rounded-2xl px-4 py-3 flex items-center gap-2 shadow-xl animate-fade-in-down">
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[300] pointer-events-auto">
+          <div
+            onClick={() => { setToast(null); eventBus.emit('show-storage'); }}
+            className="glass-green rounded-2xl px-4 py-3 flex items-center gap-3 shadow-2xl animate-fade-in-down border border-green-400/40 cursor-pointer active:scale-95 transition-all"
+          >
             <span className="text-2xl">🌾</span>
-            <p className="text-white font-bold text-sm whitespace-nowrap">{toast}</p>
+            <div className="text-left">
+              <p className="text-white font-bold text-xs leading-tight">{toast}</p>
+              <p className="text-amber-300 font-bold text-[11px] underline mt-0.5">Tap to open Storage & sell for Gold ➔</p>
+            </div>
           </div>
         </div>,
         document.body,

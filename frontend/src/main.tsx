@@ -4,6 +4,7 @@ import './index.css';
 import WebApp from '@twa-dev/sdk';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GameProvider } from '@/providers/GameProvider';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { App } from './App';
 
 const queryClient = new QueryClient({
@@ -103,19 +104,41 @@ if ((window as any).Telegram?.WebApp) {
 }
 // ────────────────────────────────────────────────────────────────────────────
 
-// Hide pre-React splash screen once JS is ready to render
+// Automatically recover from dynamic import errors (e.g. new deployment while TMA is open)
+window.addEventListener('vite:preloadError', (event) => {
+  console.warn('[Vite] Preload error detected, reloading...', event);
+  const RELOAD_KEY = 'bb_last_preload_reload';
+  const last = sessionStorage.getItem(RELOAD_KEY);
+  const now = Date.now();
+  if (!last || now - Number(last) > 10_000) {
+    sessionStorage.setItem(RELOAD_KEY, String(now));
+    window.location.reload();
+  }
+});
+
+// Hide pre-React splash screen, keeping it visible for 1.5s (1-2s) so user sees the mascot
 const splash = document.getElementById('bb-splash');
 if (splash) {
-  splash.classList.add('hidden');
-  setTimeout(() => splash.remove(), 350);
+  const MIN_SPLASH_TIME = 1500; // 1.5 seconds
+  const now = (window.performance && window.performance.now) ? window.performance.now() : Date.now();
+  const startTime = (window as any).__bb_splash_start || now;
+  const elapsed = now - startTime;
+  const delay = Math.max(0, MIN_SPLASH_TIME - elapsed);
+
+  setTimeout(() => {
+    splash.classList.add('hidden');
+    setTimeout(() => splash.remove(), 450);
+  }, delay);
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <GameProvider>
-        <App />
-      </GameProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <GameProvider>
+          <App />
+        </GameProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   </React.StrictMode>,
 );

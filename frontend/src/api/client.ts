@@ -4,7 +4,8 @@ import type {
   FriendEntry, ReferralInfo, DailyClaimResult, DailyQuest, ShopCatalog,
   NotificationInbox, ActivityEntry, Achievement, NftStatus, ExchangeRate,
   BuildingStatus, MarketplaceListing, MarketplaceListingsResponse, InventoryItem, BarnData,
-  DepositInfo, DepositVerifyResult, DexTier,
+  DepositInfo, DepositVerifyResult, DexTier, DynamicRates, CashoutQuota,
+  TreasuryStatus,
 } from '@/types/game.types';
 
 const BASE_URL = '/api';
@@ -20,31 +21,47 @@ function getInitData(): string {
   return WebApp.initData ?? '';
 }
 
-// Auth via cookie (bb_sess) set by GET /api/auth/session.
-// Cookie is sent automatically by the browser — no custom headers needed on game requests.
-// This bypasses ANY proxy that strips Authorization or custom headers.
+// Auth via session token obtained from GET /api/auth/session (a simple GET with no
+// custom headers, so it passes through any Telegram proxy or CORS restriction).
+//
+// The returned token is stored in memory and used as "Authorization: Bearer <token>"
+// on all subsequent game requests. "Authorization" is a standard HTTP header that
+// every compliant proxy passes through. The previous approach of sending initData as
+// "x-telegram-init-data" was blocked on Telegram accounts that route through certain
+// proxies in Telegram Desktop, causing a "Failed to fetch" TypeError.
+let _sessionToken: string | null = null;
 let _sessionDone = false;
 let _sessionPromise: Promise<void> | null = null;
 
 function ensureSession(): Promise<void> {
+  const initData = getInitData();
+  if (!initData) return Promise.resolve();
   if (_sessionDone) return Promise.resolve();
   if (_sessionPromise) return _sessionPromise;
 
-  // Simple GET — no body, no custom headers — works through any proxy.
-  // initData is base64-encoded in the query param to avoid URL special chars.
-  const b64 = btoa(unescape(encodeURIComponent(getInitData())));
-  _sessionPromise = fetch(`${BASE_URL}/auth/session?d=${encodeURIComponent(b64)}`)
-    .then(async (r) => {
-      if (!r.ok) {
-        const text = await r.text().catch(() => '');
-        throw new Error(`auth-${r.status}: ${text.slice(0, 120)}`);
-      }
-      _sessionDone = true;
-    })
-    .catch((err) => {
-      _sessionPromise = null; // allow retry
-      throw err;
-    });
+  try {
+    const b64 = btoa(unescape(encodeURIComponent(initData)));
+    _sessionPromise = fetch(`${BASE_URL}/auth/session?d=${encodeURIComponent(b64)}`)
+      .then(async (r) => {
+        if (r.ok) {
+          try {
+            const data = await r.json();
+            if (data?.token && typeof data.token === 'string') {
+              _sessionToken = data.token;
+            }
+          } catch {
+            // response parse failure — session cookie may still be set, continue
+          }
+          _sessionDone = true;
+        }
+      })
+      .catch(() => {
+        _sessionPromise = null; // allow retry on next request
+      });
+  } catch {
+    _sessionPromise = null;
+    return Promise.resolve();
+  }
 
   return _sessionPromise;
 }
@@ -55,36 +72,34 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const hasInitData = !!WebApp.initData;
   const online = typeof navigator !== 'undefined' ? navigator.onLine : true;
 
-  // Ensure session cookie is set before any game request. Kept because it is cheaper for
-  // same-origin clients, but it is no longer the only auth path — see the header below.
-  await ensureSession();
+  // Attempt to ensure session cookie. Non-fatal if blocked; requests carry x-telegram-init-data header.
+  await ensureSession().catch(() => {});
 
   const initData = getInitData();
+
+  // Build auth header. Priority:
+  // 1. Authorization: Bearer <session-token> — standard header, passes through proxies.
+  //    Available after the first ensureSession() call completes.
+  // 2. x-telegram-init-data — fallback for the very first request before session is
+  //    established, or if ensureSession() failed.
+  //
+  // Accounts that route through a Telegram proxy in Desktop get "TypeError: Failed to
+  // fetch" when x-telegram-init-data is sent (the proxy strips or rejects it). The
+  // Authorization header is a standard HTTP header that every compliant proxy passes
+  // through, so switching to it after ensureSession() eliminates that failure path.
+  const authHeader: Record<string, string> = _sessionToken
+    ? { Authorization: `Bearer ${_sessionToken}` }
+    : initData
+    ? { 'x-telegram-init-data': initData }
+    : {};
 
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, {
       ...options,
       headers: {
-        // Only set Content-Type for requests that have a body (POST/PATCH/PUT).
-        // GET requests with Content-Type can trigger CORS preflight and confuse proxies.
         ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        // ALWAYS carry initData as a header, in addition to the bb_sess cookie.
-        //
-        // Why this is mandatory, not belt-and-braces: fetch defaults to
-        // credentials:'same-origin'. In Telegram Web and Telegram Desktop the Mini App is
-        // an iframe on a Telegram origin, so every call to /api/... is CROSS-origin — and
-        // for a cross-origin request in that credentials mode the browser neither sends
-        // nor STORES the Set-Cookie issued by /auth/session. The cookie flow silently
-        // no-ops there: /api/ping (unauthenticated) answers 200 while every authenticated
-        // route is 401, which renders as the "Connection error — server is reachable"
-        // screen. Same-origin mobile WebViews keep working, so the failure looks
-        // account- or device-specific when it is really origin-specific.
-        //
-        // TelegramAuthGuard validates this header on its own, so auth no longer depends on
-        // cookie storage at all. Cost: a CORS preflight on cross-origin calls —
-        // x-telegram-init-data is already in the backend's allowedHeaders list.
-        ...(initData ? { 'x-telegram-init-data': initData } : {}),
+        ...authHeader,
         ...options.headers,
       },
     });
@@ -100,17 +115,33 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       errorMsg = data.message || data.error || errorMsg;
     } catch {}
     if (res.status === 401) {
-      // Session cookie expired — force re-auth on next request
+      // Session expired — force re-auth on next request
       _sessionDone = false;
       _sessionPromise = null;
+      _sessionToken = null;
     }
     throw new Error(errorMsg);
   }
 
-  return res.json() as Promise<T>;
+  // Gracefully handle empty responses (204 No Content, Content-Length: 0, or empty body)
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    return null as unknown as T;
+  }
+  const text = await res.text();
+  if (!text || text.trim() === '') {
+    return null as unknown as T;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null as unknown as T;
+  }
 }
 
 export const api = {
+  // Auth
+  logout: () => fetch(`${BASE_URL}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {}),
+
   // User
   getProfile: () => request<UserProfile>('/user/profile'),
   updateWallet: (walletAddress: string) =>
@@ -129,10 +160,15 @@ export const api = {
     request<{ cropEarned: number; cropType: string; goldLostToThieves: number; levelUp: boolean; newLevel: number; message: string }>(
       '/action/harvest', { method: 'POST', body: JSON.stringify({ plotId }) }),
 
-  steal: (targetUserId: string, plotId: string) =>
+  steal: (targetUserId: string, plotId: string, useMasterKey?: boolean, isRevenge?: boolean) =>
     request<StealResult>('/action/steal', {
       method: 'POST',
-      body: JSON.stringify({ targetUserId, plotId }),
+      body: JSON.stringify({
+        targetUserId,
+        plotId,
+        ...(useMasterKey ? { useMasterKey: true } : {}),
+        ...(isRevenge ? { isRevenge: true } : {}),
+      }),
     }),
 
   // Web3
@@ -142,10 +178,15 @@ export const api = {
       body: JSON.stringify({ amountToClaim }),
     }),
 
-  refundClaim: (nonce: number) =>
+  refundClaim: (nonce: number, unbroadcasted = false) =>
     request<{ refunded: boolean; goldRestored: number }>('/web3/refund-claim', {
       method: 'POST',
-      body: JSON.stringify({ nonce }),
+      body: JSON.stringify({ nonce, unbroadcasted }),
+    }),
+
+  refundAllPendingClaims: () =>
+    request<{ refundedCount: number; totalGoldRestored: number }>('/web3/refund-all-pending', {
+      method: 'POST',
     }),
 
   markClaimCompleted: (nonce: number) =>
@@ -166,11 +207,41 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ dogId, isGuarding }),
     }),
+  feedDog: (dogId: string) =>
+    request<{ message: string; goldSpent: number; nextFeedInHours: number }>(`/web3/dog/${dogId}/feed`, {
+      method: 'POST',
+    }),
   getShopDogs: () => request<{ id: string; dogType: string; defensePower: number }[]>('/web3/shop-dogs'),
   tokenizeDog: (count: 1 | 3) =>
     request<{ walletAddress: string; count: number; nonce: number; signature: string; contractAddress: string }>(
       '/web3/tokenize-dog', { method: 'POST', body: JSON.stringify({ count }) },
     ),
+  rollbackTokenizeDog: (nonce: number, count: 1 | 3) =>
+    request<{ restored: boolean; count: number }>(
+      '/web3/rollback-tokenize-dog', { method: 'POST', body: JSON.stringify({ nonce, count }) },
+    ),
+  redeemShards: (count: number) =>
+    request<{ walletAddress: string; count: number; nonce: number; signature: string; contractAddress: string }>(
+      '/web3/redeem-shards', { method: 'POST', body: JSON.stringify({ count }) },
+    ),
+  checkFusionEligibility: (tier: number) =>
+    request<{ eligible: boolean; baseTierId: number; available: number; tierStats: any }>(
+      `/web3/fusion/eligibility?tier=${tier}`,
+    ),
+  resolveFusion: (requestId: number) =>
+    request<{
+      requestId: number;
+      player: string;
+      baseTierId: number;
+      upgradedTier: number;
+      isSuccess: boolean;
+      shardsRewarded: number;
+      roll: number;
+      targetRate: number;
+      useLuckyBone: boolean;
+      useCollar: boolean;
+      txHash: string;
+    }>('/web3/fusion/resolve', { method: 'POST', body: JSON.stringify({ requestId }) }),
 
   // Leaderboard
   getLeaderboard: (category: 'thieves' | 'rich' | 'streak' | 'farmer' = 'thieves') =>
@@ -194,7 +265,7 @@ export const api = {
   searchUsers: (q: string) =>
     request<{ userId: string; username: string }[]>(`/user/search?q=${encodeURIComponent(q)}`),
   getExploreFarms: () =>
-    request<{ userId: string; username: string; ripePlots: number; hasGuardDog: boolean; guardDogType: string | null }[]>('/user/explore'),
+    request<{ userId: string; username: string; ripePlots: number; hasGuardDog: boolean; guardDogType: string | null; guardDogDefense?: number }[]>('/user/explore'),
 
   // Notifications
   getInbox: () => request<NotificationInbox>('/notification/inbox'),
@@ -218,6 +289,11 @@ export const api = {
       `/quest/daily/${questId}/claim`,
       { method: 'POST' },
     ),
+  claimAllQuests: () =>
+    request<{ claimedCount: number; totalGold: number; totalEnergy: number }>(
+      '/quest/daily/claim-all',
+      { method: 'POST' },
+    ),
 
   // Farm plots
   buyPlot: () => request<{ plotCount: number; cost: number; nextCost: number | null }>('/farm/buy-plot', { method: 'POST' }),
@@ -230,15 +306,23 @@ export const api = {
   // Weather
   getWeather: () => request<import('@/types/game.types').WeatherEvent>('/farm/weather/today'),
 
-  // Web3 — exchange rate
+  // Web3 — exchange rate & dynamic peg
   getExchangeRate: () => request<ExchangeRate>('/web3/exchange-rate'),
+  getDynamicRates: () => request<DynamicRates>('/web3/dynamic-rates'),
   getDexTier: () => request<DexTier>('/web3/dex-tier'),
+  getCashoutQuota: () => request<CashoutQuota>('/web3/cashout-quota'),
 
   // Web3 — deposit $FARM → GOLD (#72)
   getDepositInfo: () => request<DepositInfo>('/web3/deposit-info'),
   verifyDeposit: (txHash: string) => request<DepositVerifyResult>('/web3/deposit-verify', {
     method: 'POST',
     body: JSON.stringify({ txHash }),
+  }),
+
+  // Web3 — Auto Buyback & Burn Vault
+  getTreasuryStatus: () => request<TreasuryStatus>('/web3/treasury-status'),
+  triggerTreasuryBuyBack: () => request<{ success: boolean; message: string; txHash?: string }>('/web3/treasury-trigger', {
+    method: 'POST',
   }),
 
   // Farm buildings / maintenance (#36)
@@ -262,13 +346,17 @@ export const api = {
     request<{ message: string; goldEarned: number }>('/inventory/sell', {
       method: 'POST', body: JSON.stringify({ itemType, quantity }),
     }),
+  sellAllCrops: () =>
+    request<{ message: string; totalGoldGained: number; totalCropsSold: number }>('/inventory/sell-all', {
+      method: 'POST',
+    }),
   packCrate: (cropKey: string, crateCount: number) =>
     request<{ message: string; cratesMade: number; cropsUsed: number }>('/inventory/pack-crate', {
       method: 'POST', body: JSON.stringify({ cropKey, crateCount }),
     }),
-  unpackCrate: (cropKey: string, crateCount: number) =>
-    request<{ message: string; cropsRestored: number }>('/inventory/unpack-crate', {
-      method: 'POST', body: JSON.stringify({ cropKey, crateCount }),
+  unpackCrate: (crateItemType: string, quantity: number = 1) =>
+    request<{ message: string; cratesUnpacked: number; cropType: string; unitsGained: number }>('/inventory/unpack-crate', {
+      method: 'POST', body: JSON.stringify({ crateItemType, quantity }),
     }),
 
   // Marketplace (#19 + #74)
@@ -290,7 +378,7 @@ export const api = {
   },
   getMyMarketplaceListings: () => request<MarketplaceListing[]>('/marketplace/my-listings'),
   getMarketplaceNonce: (nftContract: string, tokenId: number) =>
-    request<{ nonce: number }>(`/marketplace/nonce?nftContract=${nftContract}&tokenId=${tokenId}`),
+    request<{ nonce: number; marketContractAddress?: string }>(`/marketplace/nonce?nftContract=${nftContract}&tokenId=${tokenId}`),
   createMarketplaceListing: (data: {
     nftContract: string; tokenId: number; amount?: number; priceFarm: number; deadline: string; eip712Sig: string;
   }) => request<MarketplaceListing>('/marketplace/list', { method: 'POST', body: JSON.stringify(data) }),
@@ -310,13 +398,13 @@ export const api = {
   buyItemListing: (id: string) =>
     request<{ message: string; itemType: string; quantity: number }>(`/marketplace/buy/${id}`, { method: 'POST' }),
 
-  // Guild
+  // Guild & World Tree Social-Fi
   listGuilds: (limit = 20, offset = 0) =>
-    request<{ id: string; name: string; tier: string; stakedFarm: number; memberCount: number; ownerUsername: string }[]>(`/guild/list?limit=${limit}&offset=${offset}`),
+    request<import('@/types/game.types').GuildListEntry[]>(`/guild/list?limit=${limit}&offset=${offset}`),
   getMyGuild: () =>
-    request<{ id: string; name: string; tier: string; stakedFarm: number; taxRate: number; worldTreeHp: number; myRole: string; memberCount: number; members: { userId: string; username: string; role: string; joinedAt: string }[] } | null>('/guild/my'),
+    request<import('@/types/game.types').GuildInfo | null>('/guild/my'),
   createGuild: (name: string) =>
-    request<{ id: string; name: string; tier: string; message: string }>('/guild/create', { method: 'POST', body: JSON.stringify({ name }) }),
+    request<{ id: string; name: string; tier: string; isPremium: boolean; message: string }>('/guild/create', { method: 'POST', body: JSON.stringify({ name }) }),
   joinGuild: (guildId: string) =>
     request<{ message: string }>('/guild/join', { method: 'POST', body: JSON.stringify({ guildId }) }),
   leaveGuild: () => request<{ message: string }>('/guild/leave', { method: 'DELETE' }),
@@ -324,10 +412,47 @@ export const api = {
   upgradeToElite: () => request<{ message: string }>('/guild/upgrade-elite', { method: 'POST' }),
   stakeToGuild: (amount: number) =>
     request<{ message: string; stakedFarm: number; canUpgrade: boolean }>('/guild/stake', { method: 'POST', body: JSON.stringify({ amount }) }),
+  waterGuildTree: (guildId?: string) =>
+    request<{ message: string; progressAdded: number; treeProgressPercent: number; treeLevel: number; status: string; isRipe: boolean; myPoints: number; waterCount: number; invitedCount: number }>('/guild/water', { method: 'POST', body: JSON.stringify({ guildId }) }),
+  buyGuildShield: () =>
+    request<{ message: string; shieldUntil: string }>('/guild/buy-shield', { method: 'POST' }),
+  autoCompoundGuild: () =>
+    request<{
+      message: string;
+      compoundGold: number;
+      remainingTreasuryGold: number;
+      progressAdded: number;
+      treeProgressPercent: number;
+      worldTreeHp: number;
+      maxWorldTreeHp: number;
+      stakedFarm: number;
+      treeStatus: string;
+    }>('/guild/auto-compound', { method: 'POST' }),
+  claimTreeReward: () =>
+    request<{ message: string; earnedFarm: number; earnedGold: number; myPoints: number; totalGuildPoints: number; isOwner: boolean; cycleFinished: boolean }>('/guild/claim-reward', { method: 'POST' }),
+  raidGuildTree: (targetGuildId: string) =>
+    request<{ message: string; stolenFarm: number; stolenGold: number }>('/guild/raid', { method: 'POST', body: JSON.stringify({ targetGuildId }) }),
+  setGuildTaxRate: (taxRate: number) =>
+    request<{ message: string; taxRate: number }>('/guild/set-tax-rate', { method: 'POST', body: JSON.stringify({ taxRate }) }),
+  linkTelegramGroup: (telegramGroupId: string) =>
+    request<{ message: string; telegramGroupId: string }>('/guild/link-group', { method: 'POST', body: JSON.stringify({ telegramGroupId }) }),
 
   // Subscriptions
   getSubscriptionStatus: () =>
-    request<{ hasButler: boolean; hasCropInsurance: boolean; subscriptions: { type: string; expiresAt: string }[] }>('/subscription/status'),
+    request<{
+      hasButler: boolean;
+      butlerExpiresAt?: string | null;
+      butlerPreferredSeedId?: string | null;
+      butlerPreferredSeed?: { id: string; name: string; costGold: number; levelRequired: number } | null;
+      hasCropInsurance: boolean;
+      insuranceExpiresAt?: string | null;
+      subscriptions: { type: string; expiresAt: string; preferredSeedId?: string | null }[];
+    }>('/subscription/status'),
+  setButlerPreferredSeed: (seedId: string | null) =>
+    request<{ message: string; preferredSeedId: string | null }>('/subscription/butler/seed', {
+      method: 'POST',
+      body: JSON.stringify({ seedId }),
+    }),
 
   // Batch actions
   harvestAll: () => request<{ harvested: number; totalCrops: number; crops: Record<string, number>; message: string; levelUp: boolean; newLevel: number }>('/action/harvest-all', { method: 'POST' }),

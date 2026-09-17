@@ -16,9 +16,12 @@ export const SEED_EMOJI: Record<string, string> = {
   wheat:        '🌾',
 
   // Seasonal seeds
-  jackolantern:  '🎃',
-  candycorn:     '🍬',
-  christmastree: '🎄',
-  snowdrop:      '❄️',
-  luckybamboo:   '🎋',
+  moonlit_lotus:    '🪷',
+  golden_starfruit: '⭐',
+  harvest_gourd:    '🍈',
+  jackolantern:     '🎃',
+  candycorn:        '🍬',
+  christmastree:    '🎄',
+  snowdrop:         '❄️',
+  luckybamboo:      '🎋',
 };

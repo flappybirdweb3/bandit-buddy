@@ -19,6 +19,11 @@ export class FarmController {
     return this.farmService.getTodayWeather();
   }
 
+  @Get('seasonal-event')
+  getSeasonalEvent() {
+    return this.farmService.getSeasonalEventInfo();
+  }
+
   @Get('my')
   async getMyFarm(@CurrentUser() user: User) {
     await this.farmService.ensureInitialPlots(user.id);

@@ -16,6 +16,8 @@ import { ShopModule } from './modules/shop/shop.module';
 import { BotModule } from './modules/bot/bot.module';
 import { GuildModule } from './modules/guild/guild.module';
 import { MarketplaceModule } from './modules/marketplace/marketplace.module';
+import { InventoryModule } from './modules/inventory/inventory.module';
+import { AuthModule } from './modules/auth/auth.module';
 
 @Module({
   imports: [
@@ -53,8 +55,14 @@ import { MarketplaceModule } from './modules/marketplace/marketplace.module';
     BotModule,
     GuildModule,
     MarketplaceModule,
+    InventoryModule,
+    AuthModule,
   ],
   providers: [
+    // Global rate limiting.
+    // ThrottlerModule.forRoot() configures the budgets; this makes ThrottlerGuard
+    // enforce them on every route. Without APP_GUARD the @Throttle() decorators set
+    // metadata but no guard runs — rate limiting is silently disabled.
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,

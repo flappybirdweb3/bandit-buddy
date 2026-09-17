@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
-import { X, ChevronRight } from 'lucide-react';
+import { X } from 'lucide-react';
 import { api } from '@/api/client';
 import { eventBus } from '@/game/EventBus';
+import { soundManager } from '@/sounds/SoundManager';
 import type { WeatherEvent } from '@/types/game.types';
 
 const EFFECT_LABELS: Record<string, string> = {
@@ -59,80 +60,85 @@ function WeatherDetailSheet({ event, onClose }: { event: WeatherEvent; onClose: 
   const hoursLeft = Math.floor(msLeft / 3_600_000);
   const minsLeft  = Math.floor((msLeft % 3_600_000) / 60_000);
 
+  const handleClose = () => {
+    try {
+      (window as any)?.Telegram?.WebApp?.HapticFeedback?.selectionChanged?.();
+    } catch {}
+    soundManager.play('click');
+    onClose();
+  };
+
   return createPortal(
-    <div className="fixed inset-0 z-[200] pointer-events-auto">
-      {/* Backdrop — stop propagation so the click doesn't reach the Phaser canvas */}
+    <div className="fixed inset-0 z-[200] pointer-events-auto flex flex-col justify-end">
+      {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-        onClick={(e) => { e.stopPropagation(); onClose(); }}
+        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+        onClick={(e) => { e.stopPropagation(); handleClose(); }}
       />
 
       {/* Sheet */}
-      <div className="absolute bottom-0 left-0 right-0 flex justify-center">
-        <div
-          className="relative w-full max-w-md glass rounded-t-3xl slide-up"
-          style={{ paddingBottom: 'max(180px, calc(180px + env(safe-area-inset-bottom)))' }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="w-10 h-1 bg-white/20 rounded-full mx-auto mt-3" />
+      <div className="relative w-full max-w-lg bg-zinc-950/95 backdrop-blur-2xl border-t border-white/10 mx-auto rounded-t-3xl overflow-hidden slide-up flex flex-col shadow-2xl z-10"
+        style={{ paddingBottom: 'max(20px, var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 20px)))' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="w-12 h-1.5 bg-white/20 rounded-full mx-auto mt-3 mb-1 flex-shrink-0" />
 
-          {/* Header */}
-          <div className="flex items-center justify-between px-5 pt-4 pb-2">
-            <div className="flex items-center gap-3">
-              <span className="text-4xl">{event.emoji}</span>
-              <div>
-                <h2 className="text-white font-black text-lg leading-tight">{event.name}</h2>
-                <p className="text-white/40 text-xs">Daily Weather Event</p>
-              </div>
-            </div>
-            <button
-              onClick={onClose}
-              className="glass rounded-full p-2 text-white/50 active:scale-90 transition-all"
-            >
-              <X size={15} />
-            </button>
-          </div>
-
-          {/* Effect badge */}
-          <div className="mx-5 mb-4">
-            <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border text-sm font-bold ${effectColor}`}>
-              <span>{event.emoji}</span>
-              <span>{EFFECT_LABELS[event.effect] ?? event.effect}</span>
-            </div>
-          </div>
-
-          {/* Description */}
-          <div className="mx-5 mb-4 glass rounded-2xl p-4">
-            <p className="text-white/80 text-sm leading-relaxed">{event.description}</p>
-          </div>
-
-          {/* Tips */}
-          {tips.length > 0 && (
-            <div className="mx-5 mb-4">
-              <p className="text-white/30 text-[10px] font-bold uppercase tracking-widest mb-2">Tips for today</p>
-              <div className="space-y-2">
-                {tips.map((tip, i) => (
-                  <div key={i} className="flex items-start gap-2 glass rounded-xl px-3 py-2">
-                    <span className="text-green-400 text-sm mt-0.5">→</span>
-                    <p className="text-white/70 text-sm leading-snug">{tip}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Timer */}
-          <div className="mx-5 flex items-center justify-between glass rounded-2xl px-4 py-3">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 pt-3 pb-2">
+          <div className="flex items-center gap-3">
+            <span className="text-4xl select-none">{event.emoji}</span>
             <div>
-              <p className="text-white/30 text-[10px] uppercase tracking-widest">Resets in</p>
-              <p className="text-white font-black text-lg">
-                {hoursLeft > 0 ? `${hoursLeft}h ${minsLeft}m` : `${minsLeft}m`}
-              </p>
+              <h2 className="text-white font-black text-lg leading-tight">{event.name}</h2>
+              <p className="text-white/40 text-xs">Daily Weather Event</p>
             </div>
-            <div className="text-right">
-              <p className="text-white/30 text-[10px] uppercase tracking-widest">Date</p>
-              <p className="text-white/60 text-sm font-bold">{event.date}</p>
+          </div>
+          <button
+            onClick={handleClose}
+            className="glass rounded-full p-2 text-white/50 hover:text-white active:scale-90 transition-all"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Effect badge */}
+        <div className="mx-5 mb-3">
+          <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border text-sm font-bold ${effectColor}`}>
+            <span>{event.emoji}</span>
+            <span>{EFFECT_LABELS[event.effect] ?? event.effect}</span>
+          </div>
+        </div>
+
+        {/* Description */}
+        <div className="mx-5 mb-3 glass rounded-2xl p-3.5 border border-white/10">
+          <p className="text-white/80 text-sm leading-relaxed">{event.description}</p>
+        </div>
+
+        {/* Tips */}
+        {tips.length > 0 && (
+          <div className="mx-5 mb-3">
+            <p className="text-white/30 text-[10px] font-bold uppercase tracking-widest mb-1.5">Tips for today</p>
+            <div className="space-y-1.5">
+              {tips.map((tip, i) => (
+                <div key={i} className="flex items-start gap-2 glass rounded-xl px-3 py-2 border border-white/5">
+                  <span className="text-green-400 text-sm mt-0.5">→</span>
+                  <p className="text-white/75 text-xs leading-snug">{tip}</p>
+                </div>
+              ))}
             </div>
+          </div>
+        )}
+
+        {/* Timer */}
+        <div className="mx-5 flex items-center justify-between glass rounded-2xl px-4 py-3 border border-white/10">
+          <div>
+            <p className="text-white/30 text-[10px] uppercase tracking-widest font-semibold">Resets in</p>
+            <p className="text-white font-black text-lg">
+              {hoursLeft > 0 ? `${hoursLeft}h ${minsLeft}m` : `${minsLeft}m`}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-white/30 text-[10px] uppercase tracking-widest font-semibold">Date</p>
+            <p className="text-white/70 text-sm font-bold">{event.date}</p>
           </div>
         </div>
       </div>
@@ -152,13 +158,7 @@ export function WeatherBanner() {
   });
 
   useEffect(() => {
-    if (showDetail) {
-      eventBus.emit('ui-overlay', true);
-      return;
-    }
-    // Delay re-enabling Phaser input to prevent touch bleedthrough
-    const t = setTimeout(() => eventBus.emit('ui-overlay', false), 200);
-    return () => clearTimeout(t);
+    eventBus.setOverlay('WeatherBanner', showDetail);
   }, [showDetail]);
 
   if (!weather) return null;
@@ -166,19 +166,27 @@ export function WeatherBanner() {
   const effectColor = EFFECT_COLORS[weather.effect] ?? 'text-white/60 bg-white/10 border-white/20';
   const isPestDay   = weather.effect === 'pest_damage';
 
+  const handleOpen = () => {
+    try {
+      (window as any)?.Telegram?.WebApp?.HapticFeedback?.selectionChanged?.();
+    } catch {}
+    soundManager.play('click');
+    setShowDetail(true);
+  };
+
   return (
     <>
       <button
-        onClick={() => setShowDetail(true)}
+        onClick={handleOpen}
         className={[
-          'relative flex items-center justify-center w-7 h-7 rounded-xl border transition-all active:scale-95 pointer-events-auto flex-shrink-0',
-          isPestDay ? 'bg-red-400/20 border-red-400/40 animate-pulse' : effectColor,
+          'relative flex items-center justify-center w-7 h-7 rounded-xl border transition-all active:scale-95 pointer-events-auto flex-shrink-0 shadow-sm',
+          isPestDay ? 'bg-red-400/20 border-red-400/50 animate-pulse text-red-300' : effectColor,
         ].join(' ')}
         title={EFFECT_LABELS[weather.effect]}
       >
-        <span className="text-base leading-none">{weather.emoji}</span>
+        <span className="text-base leading-none select-none">{weather.emoji}</span>
         {isPestDay && (
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full" />
+          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full shadow-[0_0_6px_rgba(239,68,68,0.9)]" />
         )}
       </button>
 

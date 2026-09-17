@@ -22,11 +22,16 @@ export default defineConfig({
         target: process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:3003',
         changeOrigin: true,
       },
+      '/socket.io': {
+        target: process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:3003',
+        ws: true,
+      },
     },
   },
   build: {
     target: 'es2020',
     chunkSizeWarningLimit: 2000,
+    emptyOutDir: false,
     // Telegram WebView (modern Chromium/WebKit) supports <link rel="modulepreload"> natively.
     // Disabling the polyfill prevents Vite from injecting it into the web3 chunk, which
     // would otherwise force web3 (287KB) to download before main.tsx can execute.

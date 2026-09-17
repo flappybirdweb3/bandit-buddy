@@ -1,0 +1,9 @@
+{
+  "network": "bscTestnet",
+  "timestamp": "2026-09-17T06:59:12.628Z",
+  "barnServices": "0x1D9faFb4f9125dD16d846bF1344954ddd304F14F",
+  "gachaFusion": "0x5f0c3c5A4745c5EffAd7328AD93972f6474B4118",
+  "market": "0xe2326Fa33b9293488FDCaA3F34Be2745a2f49e11",
+  "treasuryVault": "0xe59FfB05EdF59464e8803E81A4d790d828915006",
+  "deployer": "0xB32d81dB128e7739Ad21C4023d2EaF53bb3078A5"
+}

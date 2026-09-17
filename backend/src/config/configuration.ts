@@ -21,11 +21,10 @@ export default () => ({
     botUsername: process.env.TELEGRAM_BOT_USERNAME || 'BanditBuddyBot',
     webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
     appUrl: process.env.APP_URL || 'https://flappyx.com',
-    // Max age of an accepted initData payload (seconds). Telegram only guarantees the
-    // payload is fresh at Mini App open; the guard refuses anything older, so a leaked
-    // initData string cannot be replayed indefinitely. Override with
-    // TELEGRAM_INITDATA_MAX_AGE_SEC if users routinely keep the app open for days.
-    initDataMaxAgeSec: parseInt(process.env.TELEGRAM_INITDATA_MAX_AGE_SEC ?? '86400', 10) || 86400,
+    // Max age of an accepted initData payload (seconds).
+    // Telegram Desktop retains initData for days/weeks if the app/tab is left open.
+    // Default to 90 days (7,776,000s) to prevent desktop users from being falsely locked out.
+    initDataMaxAgeSec: parseInt(process.env.TELEGRAM_INITDATA_MAX_AGE_SEC ?? '7776000', 10) || 7776000,
   },
 
   jwt: {
@@ -79,6 +78,9 @@ export default () => ({
       // how many fallback endpoints ethers decides to try. Override with
       // BSC_RPC_DEADLINE_MS.
       rpcRequestDeadlineMs: parseInt(process.env.BSC_RPC_DEADLINE_MS ?? '8000', 10) || 8000,
+      // Cooldown (seconds) before allowing GOLD refund on a pending claim intent.
+      // Protects against racing against pending mempool transactions.
+      claimRefundCooldownSec: parseInt(process.env.CLAIM_REFUND_COOLDOWN_SEC ?? '600', 10) || 600,
     };
   })(),
 

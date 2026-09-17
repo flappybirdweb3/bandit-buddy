@@ -39,19 +39,19 @@ INSERT INTO seed_configs
    level_required, category, grow_time_hours, name_vi)
 VALUES
 --  name            cost    grow_sec  yield  icon_key         lvl  category  hrs   name_vi
-  ('Turnip',        120,    36000,    200,   'turnip',          0, 'root',   10.0, 'Củ cải trắng'),
-  ('Carrot',        370,    46800,    600,   'carrot',          1, 'root',   13.0, 'Cà rốt'),
-  ('Corn',          500,    54000,    850,   'corn',            2, 'grain',  15.0, 'Ngô / Bắp'),
-  ('Potato',        620,    64800,   1000,   'potato',          3, 'root',   18.0, 'Khoai tây'),
-  ('Eggplant',      750,    72000,   1200,   'eggplant',        4, 'fruit',  20.0, 'Cà tím'),
-  ('Tomato',        880,    79200,   1450,   'tomato',          5, 'fruit',  22.0, 'Cà chua'),
-  ('Pea',          1000,    93600,   1700,   'pea',             6, 'grain',  26.0, 'Đậu Hà Lan'),
-  ('Watermelon',   1150,   108000,   2000,   'watermelon',      7, 'fruit',  30.0, 'Dưa hấu'),
-  ('Strawberry',   1500,   126000,   2500,   'strawberry',      9, 'fruit',  35.0, 'Dâu tây'),
-  ('Pumpkin',      2000,   144000,   3300,   'pumpkin',        11, 'fruit',  40.0, 'Bí ngô'),
-  ('Grape',        2500,   165600,   4200,   'grape',          13, 'vine',   46.0, 'Nho'),
-  ('Sunflower',    3200,   187200,   5500,   'sunflower',      15, 'flower', 52.0, 'Hoa Hướng Dương'),
-  ('Rose',         4000,   216000,   7000,   'rose',           18, 'flower', 60.0, 'Hoa Hồng');
+  ('Turnip',        120,    36000,    200,   'turnip',          0, 'root',   10.0, 'Turnip'),
+  ('Carrot',        370,    46800,    600,   'carrot',          1, 'root',   13.0, 'Carrot'),
+  ('Corn',          500,    54000,    850,   'corn',            2, 'grain',  15.0, 'Corn'),
+  ('Potato',        620,    64800,   1000,   'potato',          3, 'root',   18.0, 'Potato'),
+  ('Eggplant',      750,    72000,   1200,   'eggplant',        4, 'fruit',  20.0, 'Eggplant'),
+  ('Tomato',        880,    79200,   1450,   'tomato',          5, 'fruit',  22.0, 'Tomato'),
+  ('Pea',          1000,    93600,   1700,   'pea',             6, 'grain',  26.0, 'Pea'),
+  ('Watermelon',   1150,   108000,   2000,   'watermelon',      7, 'fruit',  30.0, 'Watermelon'),
+  ('Strawberry',   1500,   126000,   2500,   'strawberry',      9, 'fruit',  35.0, 'Strawberry'),
+  ('Pumpkin',      2000,   144000,   3300,   'pumpkin',        11, 'fruit',  40.0, 'Pumpkin'),
+  ('Grape',        2500,   165600,   4200,   'grape',          13, 'vine',   46.0, 'Grape'),
+  ('Sunflower',    3200,   187200,   5500,   'sunflower',      15, 'flower', 52.0, 'Sunflower'),
+  ('Rose',         4000,   216000,   7000,   'rose',           18, 'flower', 60.0, 'Rose');
 
 
 -- ────────────────────────────────────────────────────────────────
@@ -79,27 +79,27 @@ INSERT INTO pet_configs
   (pet_type, name_en, name_vi, tier, defense_power, bite_rate, has_maintenance_cost, icon_key, description)
 VALUES
   ('stray_dog',
-   'Stray Dog',         'Chó cỏ',        'low',       10, 10, FALSE,
+   'Stray Dog',         'Stray Dog',        'low',       10, 10, FALSE,
    'pet_stray_dog',
    'A scrappy street dog. Low defense but better than nothing.'),
 
   ('beagle',
-   'Beagle',            'Chó Săn Thỏ',   'medium',    25, 25, FALSE,
+   'Beagle',            'Beagle',   'medium',    25, 25, FALSE,
    'pet_beagle',
    'Loyal and alert. Reliable medium-tier farm protection.'),
 
   ('husky',
-   'Husky',             'Chó Husky',     'high',      40, 40, FALSE,
+   'Husky',             'Husky',     'high',      40, 40, FALSE,
    'pet_husky',
    'Powerful and intimidating. Deters most casual thieves.'),
 
   ('german_shepherd',
-   'German Shepherd',   'Chó Bec-giê',   'legendary', 60, 60, FALSE,
+   'German Shepherd',   'German Shepherd',   'legendary', 60, 60, FALSE,
    'pet_german_shepherd',
    'Elite guard dog. Only the most skilled raiders dare attempt entry.'),
 
   ('elephant',
-   'Elephant',          'Voi',           'special',   80, 80, TRUE,
+   'Elephant',          'Elephant',           'special',   80, 80, TRUE,
    'pet_elephant',
    'Virtually impenetrable. Requires daily feed — but nothing gets past it.')
 
@@ -138,19 +138,19 @@ INSERT INTO consumable_configs
   (item_key, name_en, name_vi, effect, effect_hours, effect_sec, cost_gold, energy_cost, is_sabotage, icon_key)
 VALUES
   ('fertilizer_normal',
-   'Normal Fertilizer',   'Phân bón thường',   'reduce_grow_time',  1.0,  3600, 50,   NULL, FALSE, 'fertilizer_normal'),
+   'Normal Fertilizer',   'Normal Fertilizer',   'reduce_grow_time',  1.0,  3600, 50,   NULL, FALSE, 'fertilizer_normal'),
 
   ('fertilizer_super',
-   'Super Fertilizer',    'Phân bón siêu cấp', 'reduce_grow_time',  2.5,  9000, 150,  NULL, FALSE, 'fertilizer_super'),
+   'Super Fertilizer',    'Super Fertilizer', 'reduce_grow_time',  2.5,  9000, 150,  NULL, FALSE, 'fertilizer_super'),
 
   ('fertilizer_advanced',
-   'Advanced Fertilizer', 'Phân bón cao cấp',  'reduce_grow_time',  5.0, 18000, 300,  NULL, FALSE, 'fertilizer_advanced'),
+   'Advanced Fertilizer', 'Advanced Fertilizer',  'reduce_grow_time',  5.0, 18000, 300,  NULL, FALSE, 'fertilizer_advanced'),
 
   ('bag_of_weeds',
-   'Bag of Weeds',        'Túi cỏ dại',        'sabotage_weeds',    NULL,  NULL, NULL, 15,   TRUE,  'bag_weeds'),
+   'Bag of Weeds',        'Bag of Weeds',        'sabotage_weeds',    NULL,  NULL, NULL, 15,   TRUE,  'bag_weeds'),
 
   ('bag_of_bugs',
-   'Bag of Bugs',         'Túi sâu bọ',        'sabotage_bugs',     NULL,  NULL, NULL, 15,   TRUE,  'bag_bugs')
+   'Bag of Bugs',         'Bag of Bugs',        'sabotage_bugs',     NULL,  NULL, NULL, 15,   TRUE,  'bag_bugs')
 
 ON CONFLICT (item_key) DO UPDATE SET
   name_en      = EXCLUDED.name_en,

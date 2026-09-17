@@ -5,11 +5,16 @@ import {
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { Repository, DataSource, Like } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
+import { Cron } from '@nestjs/schedule';
+import { ethers } from 'ethers';
 import { User } from './entities/user.entity';
 import { FarmPlot } from '../farm/entities/farm-plot.entity';
 import { StealLog } from '../farm/entities/steal-log.entity';
 import { SeedConfig } from '../farm/entities/seed-config.entity';
 import { Throttle } from '@nestjs/throttler';
+
+const ORACLE_LOW_BNB   = 0.05;   // red alert
+const ORACLE_WARN_BNB  = 0.10;   // yellow warning
 
 // Simple passcode guard (not a full auth system — admin is internal tooling only)
 function requireAdmin(passcode: string | undefined, expected: string): void {
@@ -166,5 +171,71 @@ export class AdminController {
     await this.seedRepo.update(id, body);
     this.logger.log(`[Admin] Updated seed ${id}: ${JSON.stringify(body)}`);
     return { ok: true };
+  }
+
+  // ── Oracle Wallet Gas Monitor (#59) ──────────────────────────────────────────
+
+  // GET /api/admin/oracle-wallet?p=PASSCODE
+  @Get('oracle-wallet')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  async getOracleWalletBalance(@Query('p') p: string) {
+    requireAdmin(p, this.passcode);
+    const rpcUrl = this.config.get<string>('web3.bscRpcUrl') ?? 'https://bsc-dataseed.binance.org/';
+    const signerKey = this.config.get<string>('web3.signerPrivateKey');
+    if (!signerKey) return { bnbBalance: null, status: 'unknown', message: 'SIGNER_PRIVATE_KEY not set' };
+
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const wallet = new ethers.Wallet(signerKey);
+    const balance = await provider.getBalance(wallet.address);
+    const bnbBalance = parseFloat(ethers.formatEther(balance));
+    const status = bnbBalance < ORACLE_LOW_BNB ? 'critical' : bnbBalance < ORACLE_WARN_BNB ? 'warning' : 'ok';
+
+    return {
+      address: wallet.address,
+      bnbBalance: parseFloat(bnbBalance.toFixed(6)),
+      status,
+      thresholds: { critical: ORACLE_LOW_BNB, warning: ORACLE_WARN_BNB },
+    };
+  }
+
+  // Cron: alert via logger every 10 min when oracle balance is low
+  @Cron('*/10 * * * *')
+  async checkOracleWalletBalance(): Promise<void> {
+    const signerKey = this.config.get<string>('web3.signerPrivateKey');
+    if (!signerKey) return;
+    try {
+      const rpcUrl = this.config.get<string>('web3.bscRpcUrl') ?? 'https://bsc-dataseed.binance.org/';
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const wallet = new ethers.Wallet(signerKey);
+      const balance = await provider.getBalance(wallet.address);
+      const bnbBalance = parseFloat(ethers.formatEther(balance));
+      if (bnbBalance < ORACLE_LOW_BNB) {
+        this.logger.error(`ORACLE WALLET CRITICAL: ${wallet.address} = ${bnbBalance.toFixed(4)} BNB — Gacha will halt!`);
+      } else if (bnbBalance < ORACLE_WARN_BNB) {
+        this.logger.warn(`Oracle wallet low: ${wallet.address} = ${bnbBalance.toFixed(4)} BNB`);
+      }
+    } catch (err: any) {
+      this.logger.error(`Oracle wallet check failed: ${err.message}`);
+    }
+  }
+
+  // GET /api/admin/economy?p=PASSCODE — economy overview for dashboard
+  @Get('economy')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  async getEconomy(@Query('p') p: string) {
+    requireAdmin(p, this.passcode);
+    const [goldCirc, activeUsers24h, activeUsers7d, stealsToday, harvestsToday] = await Promise.all([
+      this.ds.query(`SELECT COALESCE(SUM(gold_balance), 0)::float AS total FROM users`),
+      this.ds.query(`SELECT COUNT(*) FROM users WHERE updated_at > NOW() - INTERVAL '24 hours'`),
+      this.ds.query(`SELECT COUNT(*) FROM users WHERE updated_at > NOW() - INTERVAL '7 days'`),
+      this.ds.query(`SELECT COUNT(*) FROM steal_logs WHERE created_at > NOW() - INTERVAL '24 hours'`),
+      this.ds.query(`SELECT COUNT(*) FROM farm_plots WHERE planted_at IS NULL AND total_stolen = 0 AND updated_at > NOW() - INTERVAL '24 hours'`),
+    ]);
+    return {
+      goldCirculating: Number(goldCirc[0]?.total ?? 0),
+      activeUsers: { h24: Number(activeUsers24h[0]?.count ?? 0), d7: Number(activeUsers7d[0]?.count ?? 0) },
+      stealsToday: Number(stealsToday[0]?.count ?? 0),
+      harvestsToday: Number(harvestsToday[0]?.count ?? 0),
+    };
   }
 }

@@ -1,10 +1,13 @@
-import { Controller, Get, Post, Patch, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param, Query, ParseIntPipe, UseGuards } from '@nestjs/common';
 import { Web3Service } from './web3.service';
 import { DexVolumeService } from './dex-volume.service';
 import { TelegramAuthGuard } from '../../common/guards/telegram-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Public } from '../../common/decorators/public.decorator';
 import { User } from '../user/entities/user.entity';
-import { ClaimSignatureDto, RefundClaimDto, TokenizeDogDto, SetDogGuardingDto, SetDogGuardingByIdDto, DepositVerifyDto } from './dto/web3.dto';
+import { ClaimSignatureDto, RefundClaimDto, TokenizeDogDto, RollbackTokenizeDogDto, SetDogGuardingDto, SetDogGuardingByIdDto, DepositVerifyDto, RedeemShardsDto, ResolveFusionDto } from './dto/web3.dto';
+import { FusionOracleService } from './fusion-oracle.service';
+import { TreasuryMonitorService } from './treasury-monitor.service';
 
 @Controller('web3')
 @UseGuards(TelegramAuthGuard)
@@ -12,6 +15,8 @@ export class Web3Controller {
   constructor(
     private readonly web3Service: Web3Service,
     private readonly dexVolume: DexVolumeService,
+    private readonly fusionOracle: FusionOracleService,
+    private readonly treasuryMonitor: TreasuryMonitorService,
   ) {}
 
   @Post('claim-signature')
@@ -27,7 +32,14 @@ export class Web3Controller {
     @CurrentUser() user: User,
     @Body() dto: RefundClaimDto,
   ) {
-    return this.web3Service.refundClaim(user.id, dto.nonce);
+    return this.web3Service.refundClaim(user.id, dto.nonce, dto.unbroadcasted);
+  }
+
+  @Post('refund-all-pending')
+  async refundAllPending(
+    @CurrentUser() user: User,
+  ) {
+    return this.web3Service.refundAllPendingClaims(user.id);
   }
 
   @Post('mark-claim-completed')
@@ -71,6 +83,38 @@ export class Web3Controller {
     return this.web3Service.tokenizeDog(user, dto.count);
   }
 
+  @Post('rollback-tokenize-dog')
+  async rollbackTokenizeDog(
+    @CurrentUser() user: User,
+    @Body() dto: RollbackTokenizeDogDto,
+  ) {
+    return this.web3Service.rollbackTokenizeDog(user, dto.nonce, dto.count);
+  }
+
+  @Post('redeem-shards')
+  async redeemShards(
+    @CurrentUser() user: User,
+    @Body() dto: RedeemShardsDto,
+  ) {
+    return this.web3Service.redeemShards(user, dto.count);
+  }
+
+  @Get('fusion/eligibility')
+  async checkFusionEligibility(
+    @CurrentUser() user: User,
+    @Query('tier', ParseIntPipe) tier: number,
+  ) {
+    return this.web3Service.checkFusionEligibility(user.id, tier);
+  }
+
+  @Post('fusion/resolve')
+  async resolveFusion(
+    @CurrentUser() _user: User,
+    @Body() dto: ResolveFusionDto,
+  ) {
+    return this.fusionOracle.resolveFusion(dto.requestId);
+  }
+
   @Patch('nft-dog/guard')
   async setDogGuarding(
     @CurrentUser() user: User,
@@ -95,6 +139,11 @@ export class Web3Controller {
     return this.web3Service.feedDog(user.id, dogId);
   }
 
+  @Get('dynamic-rates')
+  async getDynamicRates() {
+    return this.web3Service.getDynamicRates();
+  }
+
   @Get('exchange-rate')
   async getExchangeRate() {
     return this.web3Service.getExchangeRate();
@@ -103,7 +152,7 @@ export class Web3Controller {
   // ── Deposit $FARM → GOLD (#72) ────────────────────────────────────
 
   @Get('deposit-info')
-  getDepositInfo() {
+  async getDepositInfo() {
     return this.web3Service.getDepositInfo();
   }
 
@@ -117,5 +166,38 @@ export class Web3Controller {
     const addr = user.walletAddress ?? '';
     if (!addr) return { walletAddress: '', volume24h: 0, tier: 1, buyTax: 0.03, sellTax: 0.05 };
     return this.dexVolume.getDexTier(addr);
+  }
+
+  // ── Cashout Quota & Dynamic Drip-feed Pool ────────────────────────
+  @Get('cashout-quota')
+  async getCashoutQuota(@CurrentUser() user: User) {
+    return this.web3Service.getCashoutQuota(user);
+  }
+
+  // ── Auto Buyback & Burn Treasury ──────────────────────────────────
+  @Public()
+  @Get('treasury-status')
+  async getTreasuryStatus() {
+    return this.treasuryMonitor.getStatus();
+  }
+
+  @Post('treasury-trigger')
+  async triggerBuyBack() {
+    return this.treasuryMonitor.checkAndExecuteBuyBack();
+  }
+
+  // ── BNB Tax Revenue Engine & Premium Services ──────────────────────────
+  @Public()
+  @Get('bnb-services-config')
+  async getBnbServicesConfig() {
+    return this.web3Service.getBnbServicesConfig();
+  }
+
+  @Post('verify-subscription-tx')
+  async verifySubscriptionTx(
+    @CurrentUser() user: User,
+    @Body() dto: { txHash: string },
+  ) {
+    return this.web3Service.verifySubscriptionTx(user, dto.txHash);
   }
 }

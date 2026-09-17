@@ -14,6 +14,11 @@ export class QuestController {
     return this.questService.getDailyQuests(user.id);
   }
 
+  @Post('daily/claim-all')
+  claimAll(@CurrentUser() user: User) {
+    return this.questService.claimAllRewards(user.id);
+  }
+
   @Post('daily/:id/claim')
   claimReward(
     @CurrentUser() user: User,

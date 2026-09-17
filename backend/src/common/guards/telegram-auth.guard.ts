@@ -2,6 +2,7 @@ import {
   Injectable, CanActivate, ExecutionContext,
   UnauthorizedException, Logger,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
@@ -10,6 +11,7 @@ import { User } from '../../modules/user/entities/user.entity';
 import { FarmPlot } from '../../modules/farm/entities/farm-plot.entity';
 import { NotificationService } from '../../modules/notification/notification.service';
 import { AuthService } from '../../modules/auth/auth.service';
+import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 
 @Injectable()
 export class TelegramAuthGuard implements CanActivate {
@@ -23,108 +25,112 @@ export class TelegramAuthGuard implements CanActivate {
     private readonly authService: AuthService,
     @InjectDataSource()
     private readonly dataSource: DataSource,
+    private readonly reflector?: Reflector,
   ) {
     this.userRepo = dataSource.getRepository(User);
     this.plotRepo = dataSource.getRepository(FarmPlot);
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    if (this.reflector) {
+      const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]);
+      if (isPublic) {
+        return true;
+      }
+    }
+
     const request = context.switchToHttp().getRequest();
 
-    // Primary: bb_sess cookie — set by GET/POST /auth/session.
-    // Cookie is sent automatically by the browser for same-origin requests,
-    // requires NO custom headers, and passes through any proxy transparently.
     const rawCookie: string = request.headers['cookie'] ?? '';
-    // Split on ';' and trim, rather than on '; '. RFC 6265 permits `a=b;c=d` with no
-    // space, and some Telegram WebViews / proxy layers emit exactly that — splitting on
-    // '; ' silently failed to find bb_sess for those clients, so EVERY request fell
-    // through to initData validation and 401'd when that header was absent too.
     const cookieToken = rawCookie
       .split(';')
       .map((c) => c.trim())
       .find((c) => c.startsWith('bb_sess='))
       ?.slice('bb_sess='.length) || undefined;
+
+    const authHeader: string = request.headers['authorization'] ?? '';
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
+
+    // Standard header containing cryptographic proof from Telegram
+    const initData = ((request.headers['x-telegram-init-data'] as string | undefined) ?? '').trim();
+
+    // 1. PRIMARY: x-telegram-init-data header.
+    // If present, it is the authoritative, signed credential for the active Telegram account
+    // in this specific window/iframe. It MUST take precedence over any shared or leftover
+    // browser cookies on multi-account machines.
+    if (initData) {
+      const { telegramUser, startParam } = this.validateInitData(initData);
+      if (!telegramUser) {
+        this.logger.warn(`Auth failed: invalid initData signature. prefix: ${initData.slice(0, 80)}`);
+        throw new UnauthorizedException('Invalid Telegram initData signature');
+      }
+
+      // Fast-path: if session cookie or bearer token exists and matches THIS user's telegramId,
+      // reuse cached session user from Redis (bypasses DB write/read).
+      const activeToken = cookieToken || bearerToken;
+      if (activeToken) {
+        try {
+          const cachedUser = await this.authService.resolveBearer(activeToken);
+          if (cachedUser && Number(cachedUser.telegramId) === telegramUser.id) {
+            request.user = cachedUser;
+            return true;
+          }
+        } catch (err) {
+          this.logger.warn(`Session cache check failed: ${(err as Error).message}`);
+        }
+      }
+
+      // Cookie missing, expired, or belongs to a different account on this machine:
+      // Resolve/upsert the cryptographically verified user.
+      const { user, isNew } = await this.upsertTelegramUser(telegramUser);
+
+      if (isNew && startParam?.startsWith('ref_')) {
+        const refTelegramId = parseInt(startParam.slice(4), 10);
+        if (!isNaN(refTelegramId)) {
+          try {
+            await this.applyReferral(
+              user.id,
+              refTelegramId,
+              telegramUser.username ?? telegramUser.first_name ?? 'Someone',
+            );
+          } catch (err) {
+            this.logger.warn(
+              `Referral bonus failed for user ${user.id} (login continues): ${(err as Error).message}`,
+            );
+          }
+        }
+      }
+
+      request.user = user;
+      return true;
+    }
+
+    // 2. SECONDARY FALLBACK: bb_sess cookie (for clients that do not send custom headers)
     if (cookieToken) {
-      // A session store that is briefly unavailable (DB/Redis blip) must not become a
-      // 500 on every game request. Fall through to initData validation instead, which
-      // re-establishes the session. Only a definitively valid cookie short-circuits.
       try {
         const user = await this.authService.resolveBearer(cookieToken);
         if (user) { request.user = user; return true; }
       } catch (err) {
         this.logger.warn(
-          `Session cookie lookup failed, falling back to initData: ${(err as Error).message}`,
+          `Session cookie lookup failed: ${(err as Error).message}`,
         );
       }
-      // Cookie is stale — fall through to initData validation
     }
 
-    // Secondary: Authorization: Bearer <session-uuid> (legacy header-based flow)
-    const authHeader: string = request.headers['authorization'] ?? '';
-    if (authHeader.startsWith('Bearer ')) {
-      const token = authHeader.slice(7);
+    // 3. TERTIARY FALLBACK: Authorization: Bearer <session-uuid>
+    if (bearerToken) {
       try {
-        const user = await this.authService.resolveBearer(token);
-        if (!user) throw new UnauthorizedException('Session expired — please reload');
-        request.user = user;
-        return true;
+        const user = await this.authService.resolveBearer(bearerToken);
+        if (user) { request.user = user; return true; }
       } catch (err) {
-        // An auth verdict keeps its 401; a store outage is not an auth verdict.
-        if (err instanceof UnauthorizedException) throw err;
-        this.logger.warn(`Bearer session lookup failed, falling back: ${(err as Error).message}`);
+        this.logger.warn(`Bearer session lookup failed: ${(err as Error).message}`);
       }
     }
 
-    // initData is the ONLY accepted proof of identity, and it must arrive in the standard
-    // header. The base64 `x-tg-init` and `Authorization: tg …` paths were removed along
-    // with the rest of the legacy routes: every accepted alternative is one more place a
-    // caller can hand us an identity we never verified.
-    const initData = (request.headers['x-telegram-init-data'] as string | undefined) ?? '';
-
-    if (!initData) throw new UnauthorizedException('Missing Telegram initData');
-
-    // Returns a user ONLY when the HMAC over the payload validates against our bot token.
-    // There is no unverified branch any more — see validateInitData().
-    const { telegramUser, startParam } = this.validateInitData(initData);
-    if (!telegramUser) {
-      this.logger.warn(`Auth failed: invalid initData signature. prefix: ${String(initData).slice(0, 80)}`);
-      throw new UnauthorizedException('Invalid Telegram initData signature');
-    }
-
-    // ONE atomic upsert keyed on users.telegram_id (UNIQUE). Two devices — or two requests
-    // this same device fires in parallel — converge on the SAME row. Neither can create a
-    // second account for one Telegram user, which is what produced the "different wallet
-    // and different gold on every PC" symptom.
-    const { user, isNew } = await this.upsertTelegramUser(telegramUser);
-
-    // Apply referral bonus on first login if came via invite link.
-    //
-    // Deliberately NON-FATAL. This ran with a bare `await`, so ANY failure inside the
-    // bonus path (missing referrer reference, FK race on referred_by, notification
-    // error) propagated out of canActivate and 500'd the request — but only where
-    // `isNew` was true. Existing accounts skipped the block entirely and logged in
-    // normally, which is exactly the "only brand-new accounts cannot enter" signature.
-    // The account already exists and is valid at this point; a reward-side failure must
-    // never invalidate it.
-    if (isNew && startParam?.startsWith('ref_')) {
-      const refTelegramId = parseInt(startParam.slice(4), 10);
-      if (!isNaN(refTelegramId)) {
-        try {
-          await this.applyReferral(
-            user.id,
-            refTelegramId,
-            telegramUser.username ?? telegramUser.first_name ?? 'Someone',
-          );
-        } catch (err) {
-          this.logger.warn(
-            `Referral bonus failed for user ${user.id} (login continues): ${(err as Error).message}`,
-          );
-        }
-      }
-    }
-
-    request.user = user;
-    return true;
+    throw new UnauthorizedException('Missing Telegram initData');
   }
 
   private validateInitData(initData: string): { telegramUser: any; startParam: string | null } {
@@ -198,13 +204,17 @@ export class TelegramAuthGuard implements CanActivate {
       // replayable for as long as we keep accepting it. `auth_date` is inside the signed
       // payload, so it cannot be forged. Only the handshake is affected — afterwards the
       // session travels in bb_sess / Bearer.
-      const maxAgeSec = this.config.get<number>('telegram.initDataMaxAgeSec') ?? 86_400;
+      const maxAgeSec = this.config.get<number>('telegram.initDataMaxAgeSec') ?? (86_400 * 90);
       const authDate = Number(params.get('auth_date'));
       if (!Number.isFinite(authDate) || authDate <= 0) {
         this.logger.warn('Rejected initData without a usable auth_date');
         return empty;
       }
       const ageSec = Math.floor(Date.now() / 1000) - authDate;
+      if (ageSec < -300) {
+        this.logger.warn(`Rejected initData from future (clock skew: ${ageSec}s)`);
+        return empty;
+      }
       if (ageSec > maxAgeSec) {
         this.logger.warn(`Rejected stale initData (age ${ageSec}s > ${maxAgeSec}s)`);
         return empty;
@@ -222,15 +232,29 @@ export class TelegramAuthGuard implements CanActivate {
   private async applyReferral(newUserId: string, referrerTelegramId: number, newUsername: string): Promise<void> {
     const referrer = await this.userRepo.findOne({ where: { telegramId: referrerTelegramId } });
     if (!referrer || referrer.id === newUserId) return;
-    // Both parties get 120G: referrer as reward, new user as welcome bonus
+    // Both parties get 120G: referrer as reward, new user as welcome bonus. Referrer gets +1 Magnifying Glass.
     await Promise.all([
       this.userRepo.update(newUserId, { referredBy: referrer.id }),
       this.userRepo.increment({ id: newUserId }, 'goldBalance', 120),
       this.userRepo.increment({ id: referrer.id }, 'goldBalance', 120),
+      // PVP-03: Grant 1 Magnifying Glass to referrer
+      this.dataSource.query(
+        `INSERT INTO user_items (user_id, item_type, quantity, locked_quantity)
+         VALUES ($1, 'magnifying_glass', 1, 0)
+         ON CONFLICT (user_id, item_type)
+         DO UPDATE SET quantity = user_items.quantity + 1`,
+        [referrer.id],
+      ),
+      // Record referral reward milestone
+      this.dataSource.query(
+        `INSERT INTO referral_rewards (referrer_id, reward_type, referred_user_id, milestone_count)
+         VALUES ($1, 'magnifying_glass', $2, 1)`,
+        [referrer.id, newUserId],
+      ).catch(() => {}),
     ]);
     if (referrer.notificationsEnabled) {
       this.notificationService.notifyReferralBonus(
-        referrer.id, Number(referrer.telegramId), newUsername, 120,
+        referrer.id, Number(referrer.telegramId), newUsername, 120, 1,
       ).catch(() => {});
     }
   }

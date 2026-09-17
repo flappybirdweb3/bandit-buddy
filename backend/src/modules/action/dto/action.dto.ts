@@ -1,4 +1,5 @@
-import { IsUUID, IsNotEmpty, IsIn, IsOptional, IsBoolean } from 'class-validator';
+import { IsUUID, IsNotEmpty, IsIn, IsOptional, IsBoolean, IsInt, Min, Max } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class PlantDto {
   @IsUUID()
@@ -28,6 +29,10 @@ export class StealDto {
   @IsOptional()
   @IsBoolean()
   useMasterKey?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isRevenge?: boolean;
 }
 
 export class RevealThiefDto {
@@ -41,7 +46,10 @@ export class RepairDto {
   target: 'fence' | 'barn';
 
   /** How much durability to restore (10-100, increments of 10) */
-  @IsNotEmpty()
+  @Type(() => Number)
+  @IsInt()
+  @Min(10)
+  @Max(100)
   amount: number;
 }
 

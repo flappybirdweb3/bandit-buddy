@@ -70,6 +70,19 @@ describe('GuardDogNFT', () => {
     it('defaults burnOnPurchase to true', async () => {
       expect(await nft.burnOnPurchase()).to.be.true;
     });
+
+    it('reverts on zero address in constructor', async () => {
+      const NftF = await ethers.getContractFactory('GuardDogNFT');
+      await expect(
+        NftF.deploy(ethers.ZeroAddress, owner.address, treasury.address, 'https://cdn.example/dogs/'),
+      ).to.be.revertedWithCustomError(NftF, 'ZeroAddress');
+      await expect(
+        NftF.deploy(await token.getAddress(), ethers.ZeroAddress, treasury.address, 'https://cdn.example/dogs/'),
+      ).to.be.revertedWithCustomError(NftF, 'OwnableInvalidOwner');
+      await expect(
+        NftF.deploy(await token.getAddress(), owner.address, ethers.ZeroAddress, 'https://cdn.example/dogs/'),
+      ).to.be.revertedWithCustomError(NftF, 'ZeroAddress');
+    });
   });
 
   // ─── Purchase ──────────────────────────────────────────────────────────

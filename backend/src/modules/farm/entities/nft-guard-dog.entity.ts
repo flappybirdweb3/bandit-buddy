@@ -23,11 +23,17 @@ export class NftGuardDog {
   @Column({ type: 'boolean', default: true, name: 'is_active' })
   isActive: boolean;
 
+  @Column({ type: 'boolean', default: true, name: 'is_guarding' })
+  isGuarding: boolean;
+
   @Column({ type: 'varchar', length: 20, default: 'nft' })
   source: string; // 'nft' | 'shop'
 
   @Column({ type: 'timestamp', default: () => 'NOW()', name: 'last_fed_at' })
   lastFedAt: Date;
+
+  @Column({ type: 'uuid', name: 'listing_id', nullable: true })
+  listingId: string | null;
 
   @ManyToOne(() => User, (user) => user.guardDogs)
   @JoinColumn({ name: 'owner_id' })

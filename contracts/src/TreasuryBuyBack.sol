@@ -9,34 +9,43 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 
 /**
  * @title TreasuryBuyBack
- * @notice Accumulates $FARM from platform fees and subscriptions.
- *         Owner triggers buy-back: swaps accumulated BNB for $FARM via PancakeSwap,
- *         then burns the purchased FARM (deflationary mechanism).
+ * @notice Deflationary Treasury & Tokenomics Protection Vault for Bandit Buddy ($FARM).
+ *         Accepts BNB revenues from game services, premium perks, and NFT marketplace fees.
+ *         Once the treasury accumulates >= buyBackThreshold (default 2 BNB), the buy-back
+ *         mechanism swaps accumulated BNB for $FARM via PancakeSwap V2 Router and routes
+ *         the purchased tokens directly to the dead address (0x...dEaD) for permanent burn.
  *
- * Flow:
- *   1. BanditMarket / subscription contracts transfer $FARM fees here.
- *   2. Owner (or keeper bot) calls executeBuyBack() periodically.
- *   3. Contract swaps BNB for $FARM on PancakeSwap V2, then burns.
- *
- * Note: FARM can also be sent directly here for a simpler burn-only path.
+ * Requirements & Specifications:
+ *   - Auto Buy-back & Burn PRD (AUTO_BUYBACK_AND_BURN.MD)
+ *   - Uses swapExactETHForTokensSupportingFeeOnTransferTokens (FARM has dynamic fee-on-transfer tax)
+ *   - Destination address is strictly 0x000000000000000000000000000000000000dEaD
+ *   - Emits BuyBackAndBurned(bnbSpent, farmBurned) for verifiable Proof of Burn
  */
 contract TreasuryBuyBack is ReentrancyGuard, Ownable, Pausable {
     using SafeERC20 for IERC20;
+
+    address public constant DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
 
     IERC20  public immutable farmToken;
     address public immutable pancakeRouter; // PancakeSwap V2 router
     address public immutable wbnb;
 
-    uint256 public totalBurned;
-    uint256 public slippageBps = 200; // 2% max slippage
+    uint256 public buyBackThreshold = 2 ether; // Default: 2 BNB
+    uint256 public slippageBps = 600;          // Default: 6% slippage (accommodates 3% fee-on-transfer tax + 3% price impact)
+    uint256 public totalBurned;                // Cumulative $FARM tokens burned
+    uint256 public totalBnbSpent;              // Cumulative BNB spent on buybacks
 
-    event BuyBackExecuted(uint256 bnbSpent, uint256 farmBurned);
+    event BuyBackAndBurned(uint256 indexed bnbSpent, uint256 indexed farmBurned);
     event DirectBurn(uint256 farmBurned);
-    event SlippageUpdated(uint256 newBps);
+    event ThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
+    event SlippageUpdated(uint256 oldBps, uint256 newBps);
     event FundsReceived(address indexed from, uint256 amount);
 
     error InsufficientBalance();
+    error ThresholdNotReached(uint256 currentBalance, uint256 threshold);
     error SlippageTooHigh();
+    error InvalidAddress();
+    error ZeroAmount();
 
     constructor(
         address _farmToken,
@@ -44,32 +53,45 @@ contract TreasuryBuyBack is ReentrancyGuard, Ownable, Pausable {
         address _wbnb,
         address _owner
     ) Ownable(_owner) {
+        if (_farmToken == address(0) || _pancakeRouter == address(0) || _wbnb == address(0)) {
+            revert InvalidAddress();
+        }
         farmToken     = IERC20(_farmToken);
         pancakeRouter = _pancakeRouter;
         wbnb          = _wbnb;
     }
 
+    /**
+     * @notice Accepts BNB revenue from game services, marketplace fees, and deposits.
+     */
     receive() external payable {
         emit FundsReceived(msg.sender, msg.value);
     }
 
-    // ── Core ─────────────────────────────────────────────────────────────────
+    // ── Core Buy-back & Burn Functions ──────────────────────────────────────────
 
     /**
-     * Swap BNB in contract for $FARM, then burn. Called by keeper bot.
-     *
-     * MODIFIER ORDER — access → lock → state, and it must not change:
-     *   - onlyOwner first rejects unauthorised callers before any SSTORE. A re-entrant
-     *     callback from the router is never the owner, so it dies at this gate.
-     *   - nonReentrant then holds the lock across BOTH external calls (getAmountsOut and
-     *     swapExactETHForTokens) and the burn. Moving it after the swap defeats it.
-     *   - whenNotPaused last. Its exact position is immaterial (a revert rolls back the
-     *     lock) but keeping it adjacent to the body reads as the state gate.
-     *
-     * @param bnbAmount BNB to swap (must be > 0 and ≤ contract balance).
-     * @param minFarmOut Caller's floor. The EFFECTIVE floor is the stricter of this and the
-     *                   slippageBps-derived quote floor, so passing 0 no longer disables
-     *                   slippage protection.
+     * @notice Automated Buy-back & Burn triggered by backend worker or keeper bot.
+     *         Can be called when contract balance >= buyBackThreshold.
+     *         Swaps all contract BNB for $FARM and sends directly to the DEAD address.
+     */
+    function triggerBuyBack()
+        external
+        nonReentrant
+        whenNotPaused
+    {
+        uint256 bnbToSpend = address(this).balance;
+        if (bnbToSpend < buyBackThreshold) {
+            revert ThresholdNotReached(bnbToSpend, buyBackThreshold);
+        }
+
+        _executeSwapAndBurn(bnbToSpend, 0);
+    }
+
+    /**
+     * @notice Manual Buy-back & Burn executed by the owner/admin.
+     * @param bnbAmount Exact BNB amount to spend.
+     * @param minFarmOut Optional minimum $FARM required (slippage floor).
      */
     function executeBuyBack(uint256 bnbAmount, uint256 minFarmOut)
         external
@@ -77,71 +99,90 @@ contract TreasuryBuyBack is ReentrancyGuard, Ownable, Pausable {
         nonReentrant
         whenNotPaused
     {
-        // A zero-value swap is either a no-op or a router revert; reject it up front.
-        if (bnbAmount == 0) revert InsufficientBalance();
+        if (bnbAmount == 0) revert ZeroAmount();
         if (address(this).balance < bnbAmount) revert InsufficientBalance();
 
+        _executeSwapAndBurn(bnbAmount, minFarmOut);
+    }
+
+    /**
+     * @dev Internal swap execution using PancakeSwap V2 Router.
+     *      MUST use swapExactETHForTokensSupportingFeeOnTransferTokens because $FARM
+     *      implements a dynamic transfer tax.
+     */
+    function _executeSwapAndBurn(uint256 bnbAmount, uint256 minFarmOut) internal {
         address[] memory path = new address[](2);
         path[0] = wbnb;
         path[1] = address(farmToken);
 
-        // slippageBps was previously declared and settable but NEVER read — the only floor
-        // was the caller-supplied minFarmOut, so a keeper passing 0 accepted any fill, and
-        // the acquired FARM is burned immediately, making the loss permanent.
-        // getAmountsOut is declared `view`, so the compiler emits STATICCALL and the quote
-        // cannot re-enter. Quote and swap execute in the same transaction, so the floor is
-        // measured against the exact price the swap will see.
-        uint256[] memory quote = IPancakeRouter(pancakeRouter).getAmountsOut(bnbAmount, path);
+        // Calculate dynamic slippage floor from onchain quote
+        uint256[] memory quote = IPancakeRouter02(pancakeRouter).getAmountsOut(bnbAmount, path);
         uint256 quoteFloor = (quote[1] * (10_000 - slippageBps)) / 10_000;
         uint256 effectiveMinOut = quoteFloor > minFarmOut ? quoteFloor : minFarmOut;
 
-        uint256 balBefore = farmToken.balanceOf(address(this));
+        uint256 deadBalBefore = farmToken.balanceOf(DEAD_ADDRESS);
 
-        IPancakeRouter(pancakeRouter).swapExactETHForTokens{value: bnbAmount}(
+        // Execute swap directly to DEAD address for immediate deflation & DexScreener burn candle
+        IPancakeRouter02(pancakeRouter).swapExactETHForTokensSupportingFeeOnTransferTokens{value: bnbAmount}(
             effectiveMinOut,
             path,
-            address(this),
+            DEAD_ADDRESS,
             block.timestamp + 300
         );
 
-        uint256 purchased = farmToken.balanceOf(address(this)) - balBefore;
-        _burnFarm(purchased);
+        uint256 farmBurned = farmToken.balanceOf(DEAD_ADDRESS) - deadBalBefore;
+        totalBurned += farmBurned;
+        totalBnbSpent += bnbAmount;
 
-        emit BuyBackExecuted(bnbAmount, purchased);
+        emit BuyBackAndBurned(bnbAmount, farmBurned);
     }
 
     /**
-     * Burn any $FARM already held by this contract (direct fee routing).
+     * @notice Burns any $FARM tokens directly held by this contract (from fee routing).
      */
     function burnHeldFarm() external onlyOwner nonReentrant {
         uint256 balance = farmToken.balanceOf(address(this));
         if (balance == 0) revert InsufficientBalance();
-        _burnFarm(balance);
+
+        farmToken.safeTransfer(DEAD_ADDRESS, balance);
+        totalBurned += balance;
+
         emit DirectBurn(balance);
     }
 
-    // ── Internal ─────────────────────────────────────────────────────────────
+    // ── Configuration & Admin ──────────────────────────────────────────────────
 
-    function _burnFarm(uint256 amount) internal {
-        totalBurned += amount;
-        IBurnable(address(farmToken)).burn(amount);
+    /**
+     * @notice Updates the accumulation trigger threshold (e.g., 1 ether, 2 ether).
+     */
+    function setBuyBackThreshold(uint256 newThreshold) external onlyOwner {
+        if (newThreshold == 0) revert ZeroAmount();
+        emit ThresholdUpdated(buyBackThreshold, newThreshold);
+        buyBackThreshold = newThreshold;
     }
 
-    // ── Admin ────────────────────────────────────────────────────────────────
-
+    /**
+     * @notice Updates the maximum slippage tolerance in basis points (100 = 1%).
+     */
     function setSlippage(uint256 _bps) external onlyOwner {
-        if (_bps > 1000) revert SlippageTooHigh();
+        if (_bps > 1000) revert SlippageTooHigh(); // Max 10%
+        emit SlippageUpdated(slippageBps, _bps);
         slippageBps = _bps;
-        emit SlippageUpdated(_bps);
     }
 
-    /** Emergency: recover accidentally sent tokens (not FARM — use burnHeldFarm). */
+    /**
+     * @notice Emergency recovery for accidentally sent ERC-20 tokens (excluding $FARM).
+     */
     function recoverERC20(address token, uint256 amount) external onlyOwner {
         require(token != address(farmToken), "Use burnHeldFarm");
         IERC20(token).safeTransfer(owner(), amount);
     }
 
+    /**
+     * @notice Emergency recovery for BNB.
+     */
     function recoverBNB(uint256 amount) external onlyOwner {
+        if (amount == 0 || address(this).balance < amount) revert InsufficientBalance();
         (bool ok,) = payable(owner()).call{value: amount}("");
         require(ok, "BNB transfer failed");
     }
@@ -150,22 +191,16 @@ contract TreasuryBuyBack is ReentrancyGuard, Ownable, Pausable {
     function unpause() external onlyOwner { _unpause(); }
 }
 
-interface IPancakeRouter {
-    function swapExactETHForTokens(
+interface IPancakeRouter02 {
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
         uint256 amountOutMin,
         address[] calldata path,
         address to,
         uint256 deadline
-    ) external payable returns (uint256[] memory amounts);
+    ) external payable;
 
-    /// @dev Declared `view` on purpose: Solidity then emits STATICCALL, so this quote
-    ///      cannot re-enter the buyback even if `pancakeRouter` were ever untrusted.
     function getAmountsOut(uint256 amountIn, address[] calldata path)
         external
         view
         returns (uint256[] memory amounts);
-}
-
-interface IBurnable {
-    function burn(uint256 amount) external;
 }

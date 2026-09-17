@@ -11,6 +11,7 @@ import { TutorialOverlay, TUTORIAL_KEY } from '@/components/TutorialOverlay';
 import { SkeletonHUD } from '@/components/SkeletonHUD';
 import { SoundSystem } from '@/components/SoundSystem';
 import { ToastContainer } from '@/components/Toast';
+import { LiveTradeToast } from '@/components/notifications/LiveTradeToast';
 import { useGame } from '@/providers/GameProvider';
 import { useAutoWallet } from '@/hooks/useAutoWallet';
 import { useFullscreen } from '@/hooks/useFullscreen';
@@ -18,6 +19,7 @@ import { useOfflineDetection } from '@/hooks/useOfflineDetection';
 import { api } from '@/api/client';
 import WebApp from '@twa-dev/sdk';
 import { ArrowLeft, Maximize2, Minimize2 } from 'lucide-react';
+import { NeighborVisitHeader } from '@/components/hud/NeighborVisitHeader';
 import { soundManager } from '@/sounds/SoundManager';
 import type { PlotClickEvent, FarmData } from '@/types/game.types';
 
@@ -64,29 +66,42 @@ const BuyPlotModal     = lazy(() => import('@/components/modals/BuyPlotModal').t
 const PlotUpgradeModal = lazy(() => import('@/components/modals/PlotUpgradeModal').then(m => ({ default: m.PlotUpgradeModal })));
 const WalletSetupModal = lazy(() => import('@/components/modals/WalletSetupModal').then(m => ({ default: m.WalletSetupModal })));
 const FertilizerModal  = lazy(() => import('@/components/modals/FertilizerModal').then(m => ({ default: m.FertilizerModal })));
+const ConfirmDigModal  = lazy(() => import('@/components/modals/ConfirmDigModal').then(m => ({ default: m.ConfirmDigModal })));
 const SettingsModal    = lazy(() => import('@/components/modals/SettingsModal').then(m => ({ default: m.SettingsModal })));
+const DogStatusModal   = lazy(() => import('@/components/modals/DogStatusModal').then(m => ({ default: m.DogStatusModal })));
 
 type ActiveModal =
   | { type: 'seed'; plotId: string; preSelectedSeedId?: string }
   | { type: 'harvest'; plotIndex: number }
-  | { type: 'steal'; plotId: string; plotIndex: number; targetUserId: string; targetUsername: string }
+  | { type: 'steal'; plotId: string; plotIndex: number; targetUserId: string; targetUsername: string; isRevenge?: boolean }
   | { type: 'attack'; plotId: string; plotIndex: number; targetUserId: string; targetUsername: string }
   | { type: 'friends' }
   | { type: 'buy-plot'; cost: number }
   | { type: 'upgrade-plot'; plotId: string; plotIndex: number }
   | { type: 'fertilizer'; plotId: string; plotIndex: number }
+  | { type: 'confirm-dig'; plotId: string; plotIndex: number; cropName: string; isRipe: boolean }
+  | { type: 'dog-status'; dogId?: string | null; dogType?: string | null; defense: number; lastFedAt?: string | null; isVisiting?: boolean }
   | null;
 
 
 export function App() {
-  const [started, setStarted] = useState(() => localStorage.getItem('bb_entered') === '1');
-  // Show tutorial if user has entered the game but hasn't completed the tutorial yet
-  // (handles the case where backend was down on first Enter Farm click)
-  const [showTutorial, setShowTutorial] = useState(
-    () => localStorage.getItem('bb_entered') === '1' && localStorage.getItem(TUTORIAL_KEY) !== '1',
+  const currentTelegramId = (WebApp as any).initDataUnsafe?.user?.id;
+  const enteredStorageKey = currentTelegramId ? `bb_entered_${currentTelegramId}` : 'bb_entered';
+  const tutorialStorageKey = currentTelegramId ? `${TUTORIAL_KEY}_${currentTelegramId}` : TUTORIAL_KEY;
+
+  const [started, setStarted] = useState(
+    () => localStorage.getItem(enteredStorageKey) === '1' || localStorage.getItem('bb_entered') === '1',
   );
+  // Show tutorial if user has entered the game but hasn't completed the tutorial yet
+  const [showTutorial, setShowTutorial] = useState(() => {
+    const hasEntered = localStorage.getItem(enteredStorageKey) === '1' || localStorage.getItem('bb_entered') === '1';
+    const isDone = currentTelegramId
+      ? localStorage.getItem(tutorialStorageKey) === '1'
+      : (localStorage.getItem(tutorialStorageKey) === '1' || localStorage.getItem(TUTORIAL_KEY) === '1');
+    return hasEntered && !isDone;
+  });
   const [modal, setModal] = useState<ActiveModal>(null);
-  const [visitState, setVisitState] = useState<{ userId: string; username: string } | null>(null);
+  const [visitState, setVisitState] = useState<{ userId: string; username: string; isRevenge?: boolean } | null>(null);
   const [preSelectedSeed, setPreSelectedSeed] = useState<{ seedId: string; seedName: string } | null>(null);
   const { myFarm, isLoading, profile, profileError, refetchAll } = useGame();
   const qc = useQueryClient();
@@ -145,7 +160,7 @@ export function App() {
 
     const handler = () => {
       if (modal) { setModal(null); return; }
-      if (visitState) { setVisitState(null); eventBus.emit('return-to-own-farm'); return; }
+      if (visitState) { returnToOwnFarm(); return; }
       WebApp.close();
     };
 
@@ -186,8 +201,14 @@ export function App() {
 
   const returnToOwnFarm = useCallback(() => {
     setVisitState(null);
-    if (myFarm) eventBus.emit('farm-updated', myFarm);
-  }, [myFarm]);
+    eventBus.emit('return-to-own-farm');
+    qc.removeQueries({ queryKey: ['friendFarm'] });
+    qc.invalidateQueries({ queryKey: ['myFarm'] });
+    const currentFarm = qc.getQueryData<FarmData>(['myFarm']) ?? myFarm;
+    if (currentFarm) {
+      eventBus.emit('farm-updated', currentFarm);
+    }
+  }, [myFarm, qc]);
 
   useEffect(() => {
     const unsubSeed    = eventBus.on('seed-preselected', (data) => setPreSelectedSeed(data));
@@ -207,7 +228,7 @@ export function App() {
         setModal({ type: 'harvest', plotIndex: ev.plotIndex });
       } else if (ev.action === 'steal' && visitState) {
         setModal({ type: 'steal', plotId: ev.plotId, plotIndex: ev.plotIndex,
-          targetUserId: visitState.userId, targetUsername: visitState.username });
+          targetUserId: visitState.userId, targetUsername: visitState.username, isRevenge: visitState.isRevenge });
       } else if (ev.action === 'attack' && visitState) {
         setModal({ type: 'attack', plotId: ev.plotId, plotIndex: ev.plotIndex,
           targetUserId: visitState.userId, targetUsername: visitState.username });
@@ -218,8 +239,8 @@ export function App() {
 
     const unsubFriends = eventBus.on('show-friends', () => setModal({ type: 'friends' }));
     const unsubBuyPlot = eventBus.on('buy-plot', ({ cost }) => setModal({ type: 'buy-plot', cost }));
-    const unsubVisit  = eventBus.on('visit-farm', ({ userId, username }) => {
-      setVisitState({ userId, username });
+    const unsubVisit  = eventBus.on('visit-farm', ({ userId, username, isRevenge }) => {
+      setVisitState({ userId, username, isRevenge });
       setModal(null);
     });
     const unsubBack = eventBus.on('back-to-my-farm', () => returnToOwnFarm());
@@ -231,47 +252,64 @@ export function App() {
     const unsubTool = eventBus.on('plot-tool-action', async ({ tool, plotId, plotIndex }) => {
       try {
         if (tool === 'dig') {
-          eventBus.emit('dig-animation', { plotIndex });
-          eventBus.emit('play-sound', 'click');
-          await api.dig(plotId);
-          eventBus.emit('show-toast', { message: '⛏️ Crop removed', type: 'info' });
+          const plot = myFarm?.plots[plotIndex];
+          if (!plot || plot.isEmpty) {
+            eventBus.emit('show-toast', { message: 'Plot is already empty', type: 'info' });
+            return;
+          }
+          const cropName = plot.seed?.name ?? 'Crop';
+          const isRipe = !!plot.isRipe;
+          setModal({ type: 'confirm-dig', plotId, plotIndex, cropName, isRipe });
+          return;
         } else if (tool === 'water') {
           const res = await api.water(plotId);
           eventBus.emit('water-animation', { plotIndex });
           eventBus.emit('play-sound', 'water');
-          eventBus.emit('show-toast', { message: `💧 ${res.message}`, type: 'success' });
+          eventBus.emit('show-toast', { message: res.message, type: 'success' });
         } else if (tool === 'bug-spray') {
           const res = await api.bugSpray(plotId);
           eventBus.emit('water-animation', { plotIndex });
           eventBus.emit('play-sound', 'weed_kill');
-          eventBus.emit('show-toast', { message: `🐛 ${res.message}`, type: 'success' });
+          eventBus.emit('show-toast', { message: res.message, type: 'success' });
         } else if (tool === 'weed-kill') {
           const res = await api.weedKill(plotId);
           eventBus.emit('dig-animation', { plotIndex });
           eventBus.emit('play-sound', 'weed_kill');
-          eventBus.emit('show-toast', { message: `🌿 ${res.message}`, type: 'success' });
+          eventBus.emit('show-toast', { message: res.message, type: 'success' });
         }
         qc.invalidateQueries({ queryKey: ['myFarm'] });
         qc.invalidateQueries({ queryKey: ['profile'] });
+        qc.invalidateQueries({ queryKey: ['dailyQuests'] });
+        qc.invalidateQueries({ queryKey: ['achievements'] });
+        if (visitState) {
+          qc.invalidateQueries({ queryKey: ['friendFarm', visitState.userId] });
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Action failed';
         eventBus.emit('show-toast', { message: msg, type: 'error' });
       }
     });
 
-    return () => { unsubPlot(); unsubFriends(); unsubBuyPlot(); unsubVisit(); unsubBack(); unsubTool(); unsubFertilizer(); };
+    const unsubTutorial = eventBus.on('show-tutorial', () => setShowTutorial(true));
+
+    const unsubDog = eventBus.on('dog-clicked', (ev) => {
+      setModal({
+        type: 'dog-status',
+        dogId: ev.dogId,
+        dogType: ev.dogType,
+        defense: ev.defense,
+        lastFedAt: ev.lastFedAt,
+        isVisiting: ev.isVisiting,
+      });
+    });
+
+    return () => { unsubPlot(); unsubFriends(); unsubBuyPlot(); unsubVisit(); unsubBack(); unsubTool(); unsubFertilizer(); unsubTutorial(); unsubDog(); };
   }, [myFarm, friendFarm, visitState, returnToOwnFarm, preSelectedSeed]);
 
   // Block Phaser input whenever any React modal/overlay is open.
-  // Delay unblocking by 200ms to prevent touch bleedthrough — the finger
-  // that closed the modal must fully lift before Phaser can receive events.
   useEffect(() => {
-    if (modal !== null || showSetup || showTutorial) {
-      eventBus.emit('ui-overlay', true);
-      return;
-    }
-    const t = setTimeout(() => eventBus.emit('ui-overlay', false), 200);
-    return () => clearTimeout(t);
+    const open = modal !== null || showSetup || showTutorial;
+    eventBus.setOverlay('App', open);
   }, [modal, showSetup, showTutorial]);
 
   const activeFarm = visitState ? friendFarm : myFarm;
@@ -312,9 +350,13 @@ export function App() {
           onEnter={() => {
             soundManager.unlock();
             enterFullView();
+            localStorage.setItem(enteredStorageKey, '1');
             localStorage.setItem('bb_entered', '1');
             setStarted(true);
-            if (localStorage.getItem(TUTORIAL_KEY) !== '1') {
+            const isDone = currentTelegramId
+              ? localStorage.getItem(tutorialStorageKey) === '1'
+              : (localStorage.getItem(tutorialStorageKey) === '1' || localStorage.getItem(TUTORIAL_KEY) === '1');
+            if (!isDone) {
               setShowTutorial(true);
             }
           }}
@@ -329,32 +371,24 @@ export function App() {
       {/* ── Phaser canvas (full-screen background, lazy-loaded) ── */}
       <Suspense fallback={null}><GameCanvas /></Suspense>
 
-      {/* ── Top HUD ── */}
-      <HUD />
+      {/* ── Top HUD (includes desktop fullscreen toggle seamlessly in flex row) ── */}
+      <HUD
+        isDesktop={isDesktop}
+        desktopFullscreen={desktopFullscreen}
+        onToggleDesktopFullscreen={toggleDesktopFullscreen}
+      />
 
-      {/* ── Desktop fullscreen toggle button ── */}
-      {isDesktop && (
-        <button
-          onClick={toggleDesktopFullscreen}
-          title={desktopFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-          className="fixed z-50 pointer-events-auto glass rounded-lg p-1.5 text-white/40 hover:text-white/80 active:scale-90 transition-all"
-          style={{ top: 'calc(var(--tg-safe-area-inset-top, 8px) + 6px)', right: '48px' }}
-        >
-          {desktopFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-        </button>
-      )}
-
-      {/* ── Visit banner ── */}
+      {/* ── Neighbor Visit Header ── */}
       {visitState && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 pointer-events-auto">
-          <button
-            onClick={returnToOwnFarm}
-            className="glass-red rounded-full flex items-center gap-2 px-4 py-2 text-red-300 text-sm font-bold active:scale-95 transition-all"
-          >
-            <ArrowLeft size={14} />
-            Raiding @{visitState.username}
-          </button>
-        </div>
+        <NeighborVisitHeader
+          targetUserId={visitState.userId}
+          targetUsername={visitState.username}
+          hasGuardDog={friendFarm?.hasGuardDog ?? false}
+          guardDogType={friendFarm?.guardDogType ?? null}
+          guardDogDefense={friendFarm?.guardDogDefense ?? 0}
+          isRevenge={visitState.isRevenge}
+          onReturn={returnToOwnFarm}
+        />
       )}
 
       {/* ── Friends bar (above bottom bar) ── */}
@@ -381,27 +415,44 @@ export function App() {
           />
         )}
 
-        {modal?.type === 'steal' && activeFarm && (
-          <StealModal
-            plot={activeFarm.plots.find((p) => p.id === modal.plotId)!}
-            plotIndex={modal.plotIndex}
-            targetUserId={modal.targetUserId}
-            targetUsername={modal.targetUsername}
-            hasGuardDog={activeFarm.hasGuardDog}
-            guardDogType={activeFarm.guardDogType}
-            guardDogDefense={activeFarm.guardDogDefense ?? 0}
-            onClose={() => setModal(null)}
-          />
-        )}
+        {modal?.type === 'steal' && activeFarm && (() => {
+          const plot = activeFarm.plots.find((p) => p.id === modal.plotId) ?? activeFarm.plots[modal.plotIndex];
+          if (!plot) return null;
+          return (
+            <StealModal
+              plot={plot}
+              plotIndex={modal.plotIndex}
+              targetUserId={modal.targetUserId}
+              targetUsername={modal.targetUsername}
+              hasGuardDog={activeFarm.hasGuardDog}
+              guardDogType={activeFarm.guardDogType}
+              guardDogDefense={activeFarm.guardDogDefense ?? 0}
+              isRevenge={modal.isRevenge}
+              onClose={() => setModal(null)}
+              onSwitchToAttack={() => setModal({
+                type: 'attack', plotId: modal.plotId, plotIndex: modal.plotIndex,
+                targetUserId: modal.targetUserId, targetUsername: modal.targetUsername,
+              })}
+            />
+          );
+        })()}
 
-        {modal?.type === 'attack' && activeFarm && (
-          <AttackModal
-            plot={activeFarm.plots.find((p) => p.id === modal.plotId)!}
-            targetUserId={modal.targetUserId}
-            targetUsername={modal.targetUsername}
-            onClose={() => setModal(null)}
-          />
-        )}
+        {modal?.type === 'attack' && activeFarm && (() => {
+          const plot = activeFarm.plots.find((p) => p.id === modal.plotId) ?? activeFarm.plots[modal.plotIndex];
+          if (!plot) return null;
+          return (
+            <AttackModal
+              plot={plot}
+              targetUserId={modal.targetUserId}
+              targetUsername={modal.targetUsername}
+              onClose={() => setModal(null)}
+              onSwitchToSteal={() => setModal({
+                type: 'steal', plotId: modal.plotId, plotIndex: modal.plotIndex,
+                targetUserId: modal.targetUserId, targetUsername: modal.targetUsername,
+              })}
+            />
+          );
+        })()}
 
         {modal?.type === 'friends' && (
           <FriendsModal onClose={() => setModal(null)} />
@@ -427,13 +478,44 @@ export function App() {
           />
         )}
 
+        {modal?.type === 'confirm-dig' && (
+          <ConfirmDigModal
+            plotId={modal.plotId}
+            plotIndex={modal.plotIndex}
+            cropName={modal.cropName}
+            isRipe={modal.isRipe}
+            onClose={() => setModal(null)}
+            onSuccess={() => {
+              qc.invalidateQueries({ queryKey: ['myFarm'] });
+              qc.invalidateQueries({ queryKey: ['profile'] });
+            }}
+          />
+        )}
+
+        {modal?.type === 'dog-status' && (
+          <DogStatusModal
+            dogId={modal.dogId}
+            dogType={modal.dogType}
+            defense={modal.defense}
+            lastFedAt={modal.lastFedAt}
+            isVisiting={modal.isVisiting}
+            onClose={() => setModal(null)}
+          />
+        )}
+
         {showSetup && <WalletSetupModal onClose={handleDismissSetup} />}
       </Suspense>
 
-      {showTutorial && <TutorialOverlay onDone={() => setShowTutorial(false)} />}
+      {showTutorial && (
+        <TutorialOverlay
+          storageKey={tutorialStorageKey}
+          onDone={() => setShowTutorial(false)}
+        />
+      )}
 
       <SoundSystem />
       <ToastContainer />
+      <LiveTradeToast />
     </div>
     </DesktopFrame>
   );
@@ -467,23 +549,23 @@ function ConnectionErrorScreen({ errMsg, onRetry }: { errMsg: string; onRetry: (
     /auth[-_ ]?40[13]|\b40[13]\b|unauthorized|forbidden|init\s?data|session (expired|invalid|missing)/i.test(errMsg);
   const isServerFault = /\b5\d\d\b|internal server error/i.test(errMsg);
 
-  const hardRelogin = () => {
-    // Best-effort only: an HttpOnly bb_sess is invisible to JS, and in the cross-origin
-    // iframe case there is no cookie to clear in the first place. The reload is what
-    // actually re-mints the session — /auth/session runs again on boot.
+  const hardRelogin = async () => {
+    try { await api.logout(); } catch { /* ignore */ }
     try { document.cookie = 'bb_sess=; Max-Age=0; path=/'; } catch { /* ignore */ }
     window.location.reload();
   };
 
   const hint =
     pingResult === 'testing' ? null :
-    pingResult === 'fail' || isNetworkFailure
+    pingResult === 'fail'
       ? 'Server unreachable. In Telegram → Settings → Proxy: disable proxy, or switch to mobile data.'
-      : isAuthFailure
-        ? 'The server is reachable, but this account could not start a game session. This is an auth problem, not a network one — tap “Re-login”.'
-        : isServerFault
-          ? 'The server returned an error while creating your session. Tap “Retry”, then “Re-login”.'
-          : 'The server is reachable but rejected the request. Tap “Re-login”.';
+      : isNetworkFailure && pingResult !== 'ok'
+        ? 'Network request failed. Check your internet connection or proxy settings.'
+        : isAuthFailure
+          ? 'The server is reachable, but could not authenticate this Telegram account. Tap “Re-login” to restart your session.'
+          : isServerFault
+            ? 'The server returned an error while creating your session. Tap “Retry”, then “Re-login”.'
+            : 'The server is reachable but rejected the request. Tap “Re-login”.';
 
   return (
     <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 px-6"

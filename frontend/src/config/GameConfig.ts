@@ -1,7 +1,7 @@
 // ================================================================
 // GameConfig.ts — Barn Buddy Web3
 // Single source of truth for all static game item data.
-// Parsed from: TÀI LIỆU ĐẶC TẢ VẬT PHẨM (Items Specification)
+// Parsed from: Items Specification Document
 // ================================================================
 
 // ── Enums / Union Types ──────────────────────────────────────────
@@ -93,74 +93,74 @@ function makeCrop(
 }
 
 // ── 1. Crops / Seeds ─────────────────────────────────────────────
-// Source: Section 1 — Hệ thống Hạt giống & Cây trồng
+// Source: Section 1 — Seeds & Crops System
 // Columns: levelRequired | nameEn | nameVi | category | growTimeHours | costGold | baseYield
 
 export const CROPS: Crop[] = [
-  makeCrop('Turnip',       'Củ cải trắng',      'root',   0,  10, 120,  200),
-  makeCrop('Carrot',       'Cà rốt',            'root',   1,  13, 370,  600),
-  makeCrop('Corn',         'Ngô / Bắp',         'grain',  2,  15, 500,  850),
-  makeCrop('Potato',       'Khoai tây',         'root',   3,  18, 620, 1000),
-  makeCrop('Eggplant',     'Cà tím',            'fruit',  4,  20, 750, 1200),
-  makeCrop('Tomato',       'Cà chua',           'fruit',  5,  22, 880, 1450),
-  makeCrop('Pea',          'Đậu Hà Lan',        'grain',  6,  26,1000, 1700),
-  makeCrop('Watermelon',   'Dưa hấu',           'fruit',  7,  30,1150, 2000),
-  makeCrop('Strawberry',   'Dâu tây',           'fruit',  9,  35,1500, 2500),
-  makeCrop('Pumpkin',      'Bí ngô',            'fruit', 11,  40,2000, 3300),
-  makeCrop('Grape',        'Nho',               'vine',  13,  46,2500, 4200),
-  makeCrop('Sunflower',    'Hoa Hướng Dương',   'flower',15,  52,3200, 5500),
-  makeCrop('Rose',         'Hoa Hồng',          'flower',18,  60,4000, 7000),
+  makeCrop('Turnip',       'Turnip',            'root',   0,  10, 120,  200),
+  makeCrop('Carrot',       'Carrot',            'root',   1,  13, 370,  600),
+  makeCrop('Corn',         'Corn',              'grain',  2,  15, 500,  850),
+  makeCrop('Potato',       'Potato',            'root',   3,  18, 620, 1000),
+  makeCrop('Eggplant',     'Eggplant',          'fruit',  4,  20, 750, 1200),
+  makeCrop('Tomato',       'Tomato',            'fruit',  5,  22, 880, 1450),
+  makeCrop('Pea',          'Pea',               'grain',  6,  26,1000, 1700),
+  makeCrop('Watermelon',   'Watermelon',        'fruit',  7,  30,1150, 2000),
+  makeCrop('Strawberry',   'Strawberry',        'fruit',  9,  35,1500, 2500),
+  makeCrop('Pumpkin',      'Pumpkin',           'fruit', 11,  40,2000, 3300),
+  makeCrop('Grape',        'Grape',             'vine',  13,  46,2500, 4200),
+  makeCrop('Sunflower',    'Sunflower',         'flower',15,  52,3200, 5500),
+  makeCrop('Rose',         'Rose',              'flower',18,  60,4000, 7000),
 ];
 
 // ── 2. Farming Tools ─────────────────────────────────────────────
-// Source: Section 2 — Công cụ Nông nghiệp
+// Source: Section 2 — Farming Tools
 
 export const FARMING_TOOLS: FarmingTool[] = [
   {
     id: 'hand',
     nameEn: 'Hand / Glove',
-    nameVi: 'Bàn tay / Găng tay',
+    nameVi: 'Hand / Glove',
     description: 'Default tool. Harvest your own crops or steal from neighbours.',
     iconKey: 'tool_hand',
   },
   {
     id: 'hoe',
     nameEn: 'Hoe / Trowel',
-    nameVi: 'Cái Cuốc / Xẻng nhỏ',
+    nameVi: 'Hoe / Trowel',
     description: 'Till empty soil before planting, or remove a dead/dried-up crop.',
     iconKey: 'tool_hoe',
   },
   {
     id: 'watering_can',
     nameEn: 'Watering Can',
-    nameVi: 'Bình tưới nước',
+    nameVi: 'Watering Can',
     description: 'Water dry, cracked soil to restore it to plantable condition.',
     iconKey: 'tool_watering_can',
   },
   {
     id: 'bug_spray',
     nameEn: 'Bug Spray',
-    nameVi: 'Bình xịt sâu',
+    nameVi: 'Bug Spray',
     description: 'Eradicate pest infestations planted by mischievous neighbours.',
     iconKey: 'tool_bug_spray',
   },
   {
     id: 'weed_killer',
     nameEn: 'Weed Killer',
-    nameVi: 'Bình xịt cỏ',
+    nameVi: 'Weed Killer',
     description: 'Eliminate weeds thrown into your farm by other players.',
     iconKey: 'tool_weed_killer',
   },
 ];
 
 // ── 3. Fertilizers & Consumables ─────────────────────────────────
-// Source: Section 3 — Vật phẩm Tiêu hao & Phân bón
+// Source: Section 3 — Consumables & Fertilizers
 
 export const FERTILIZERS: Fertilizer[] = [
   {
     id: 'fertilizer_normal',
     nameEn: 'Normal Fertilizer',
-    nameVi: 'Phân bón thường',
+    nameVi: 'Normal Fertilizer',
     effect: 'reduce_grow_time',
     effectValueHours: 1,
     effectValueSec: 3600,
@@ -172,7 +172,7 @@ export const FERTILIZERS: Fertilizer[] = [
   {
     id: 'fertilizer_super',
     nameEn: 'Super Fertilizer',
-    nameVi: 'Phân bón siêu cấp',
+    nameVi: 'Super Fertilizer',
     effect: 'reduce_grow_time',
     effectValueHours: 2.5,
     effectValueSec: 9000,
@@ -184,7 +184,7 @@ export const FERTILIZERS: Fertilizer[] = [
   {
     id: 'fertilizer_advanced',
     nameEn: 'Advanced Fertilizer',
-    nameVi: 'Phân bón cao cấp',
+    nameVi: 'Advanced Fertilizer',
     effect: 'reduce_grow_time',
     effectValueHours: 5,
     effectValueSec: 18000,
@@ -196,7 +196,7 @@ export const FERTILIZERS: Fertilizer[] = [
   {
     id: 'bag_of_weeds',
     nameEn: 'Bag of Weeds',
-    nameVi: 'Túi cỏ dại',
+    nameVi: 'Bag of Weeds',
     effect: 'sabotage_weeds',
     effectValueHours: null,
     effectValueSec: null,
@@ -208,7 +208,7 @@ export const FERTILIZERS: Fertilizer[] = [
   {
     id: 'bag_of_bugs',
     nameEn: 'Bag of Bugs',
-    nameVi: 'Túi sâu bọ',
+    nameVi: 'Bag of Bugs',
     effect: 'sabotage_bugs',
     effectValueHours: null,
     effectValueSec: null,
@@ -220,7 +220,7 @@ export const FERTILIZERS: Fertilizer[] = [
 ];
 
 // ── 4. Guard Pets (NFTs) ─────────────────────────────────────────
-// Source: Section 4 — Động vật bảo vệ
+// Source: Section 4 — Guard Animals
 // defensePower: percentage points subtracted from thief's base success rate (80%)
 // biteRate: used as the penalty multiplier on theft failure
 
@@ -228,7 +228,7 @@ export const GUARD_PETS: GuardPet[] = [
   {
     id: 'stray_dog',
     nameEn: 'Stray Dog',
-    nameVi: 'Chó cỏ',
+    nameVi: 'Stray Dog',
     petType: 'stray_dog',
     tier: 'low',
     defensePower: 10,
@@ -240,7 +240,7 @@ export const GUARD_PETS: GuardPet[] = [
   {
     id: 'beagle',
     nameEn: 'Beagle',
-    nameVi: 'Chó Săn Thỏ',
+    nameVi: 'Beagle',
     petType: 'beagle',
     tier: 'medium',
     defensePower: 25,
@@ -252,7 +252,7 @@ export const GUARD_PETS: GuardPet[] = [
   {
     id: 'husky',
     nameEn: 'Husky',
-    nameVi: 'Chó Husky',
+    nameVi: 'Husky',
     petType: 'husky',
     tier: 'high',
     defensePower: 40,
@@ -264,7 +264,7 @@ export const GUARD_PETS: GuardPet[] = [
   {
     id: 'german_shepherd',
     nameEn: 'German Shepherd',
-    nameVi: 'Chó Bec-giê',
+    nameVi: 'German Shepherd',
     petType: 'german_shepherd',
     tier: 'legendary',
     defensePower: 60,
@@ -276,7 +276,7 @@ export const GUARD_PETS: GuardPet[] = [
   {
     id: 'elephant',
     nameEn: 'Elephant',
-    nameVi: 'Voi',
+    nameVi: 'Elephant',
     petType: 'elephant',
     tier: 'special',
     defensePower: 80,

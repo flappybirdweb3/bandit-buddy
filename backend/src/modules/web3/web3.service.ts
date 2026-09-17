@@ -1,6 +1,7 @@
 import {
   Injectable, BadRequestException, ForbiddenException, HttpException,
-  InternalServerErrorException, Logger, ServiceUnavailableException,
+  HttpStatus, InternalServerErrorException, Logger, ServiceUnavailableException,
+  Inject, forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectDataSource } from '@nestjs/typeorm';
@@ -9,10 +10,55 @@ import { ethers } from 'ethers';
 import { Cron } from '@nestjs/schedule';
 import { User } from '../user/entities/user.entity';
 import { NftGuardDog } from '../farm/entities/nft-guard-dog.entity';
+import { MarketplaceListing } from '../marketplace/entities/marketplace-listing.entity';
 import { ClaimIntent } from './entities/claim-intent.entity';
 import { RedisService } from '../../common/redis.service';
 import { DexOracleService } from './dex-oracle.service';
+import { EconomyOracleService } from './economy-oracle.service';
+import { TreasuryMonitorService } from './treasury-monitor.service';
+import { GuildService } from '../guild/guild.service';
 import { buildClaimDigest } from './claim-digest';
+
+export enum UserCashoutTier {
+  TIER_0 = 0,
+  TIER_1 = 1,
+  TIER_2 = 2,
+  TIER_3 = 3,
+}
+
+export const CASHOUT_TIER_PERCENTAGES: Record<UserCashoutTier, number> = {
+  [UserCashoutTier.TIER_0]: 0.0,      // 0% of Global Pool
+  [UserCashoutTier.TIER_1]: 0.0005,   // 0.05% of Global Pool
+  [UserCashoutTier.TIER_2]: 0.0020,   // 0.20% of Global Pool
+  [UserCashoutTier.TIER_3]: 0.0200,   // 2.00% of Global Pool
+};
+
+export const CASHOUT_TIER_NAMES: Record<UserCashoutTier, string> = {
+  [UserCashoutTier.TIER_0]: 'Tier 0 - Unverified / Low Trust',
+  [UserCashoutTier.TIER_1]: 'Tier 1 - Novice Farmer',
+  [UserCashoutTier.TIER_2]: 'Tier 2 - Dedicated Farmer',
+  [UserCashoutTier.TIER_3]: 'Tier 3 - Elite / Whale',
+};
+
+export interface CashoutQuotaResponse {
+  date: string;
+  tier: UserCashoutTier;
+  tierName: string;
+  tierPercentage: number;
+  userDailyLimit: number;
+  userSpentToday: number;
+  userRemaining: number;
+  globalDailyPool: number;
+  globalSpentToday: number;
+  globalRemaining: number;
+  releaseRate: number;
+  priceGrowth24h: number;
+  totalCirculatingGold: number;
+  goldPerFarmWithdraw: number;
+  resetAtUtc: string;
+  canWithdraw: boolean;
+  reason?: string;
+}
 
 const ERC1155_ABI = [
   'function balanceOf(address account, uint256 id) view returns (uint256)',
@@ -36,24 +82,9 @@ export type NftSyncResult = {
   totalNftDefense: number;
   dogs: Array<{ tokenId: number; dogType: string; defensePower: number; balance: number }>;
   shards?: number;
-  /**
-   * True when the chain read could not be performed (node down / timeout / RPC error).
-   * The caller is looking at last-known-good state, not at a genuinely empty wallet —
-   * the two must stay distinguishable so the UI can say "try again" instead of
-   * "you own no dogs".
-   */
   unavailable?: boolean;
 };
 
-/**
- * True when an error originated in the RPC transport rather than in our own logic.
- *
- * ethers v6 tags transport problems with `code` (NETWORK_ERROR / TIMEOUT / SERVER_ERROR)
- * and keeps the underlying fetch/node error on `cause`. An unreachable or rate-limited
- * node is an operational condition, not a defect: callers should degrade to stale/default
- * data instead of surfacing an unhandled 500. Everything else — a decode error, a DB
- * constraint, a bad address — is rethrown untouched so real bugs stay loud.
- */
 function isRpcFailure(err: unknown): boolean {
   const code = (err as { code?: unknown })?.code;
   if (
@@ -78,6 +109,12 @@ export class Web3Service {
   private adminWallet: ethers.Wallet | null = null;
   private provider: ethers.FallbackProvider | null = null;
 
+  /** Dynamic Peg configuration constants */
+  private readonly BASE_GOLD_USD_VALUE = 0.0001; // Intrinsic value: 1 GOLD = $0.0001 USD ($1 = 10,000 GOLD)
+  private readonly DEPOSIT_FEE = 0.00; // 0% fee on deposits (FARM -> GOLD)
+  private readonly WITHDRAW_FEE = 0.05; // 5% protocol fee on withdrawals (GOLD -> FARM)
+  private readonly MIN_TREASURY_RESERVE_FARM = 100; // Safety reserve threshold
+
   /** Chain id actually served by the RPC endpoints, cached after the first successful probe. */
   private resolvedChainId: bigint | undefined;
 
@@ -93,6 +130,10 @@ export class Web3Service {
     private readonly dataSource: DataSource,
     private readonly redis: RedisService,
     private readonly dexOracle: DexOracleService,
+    private readonly economyOracle: EconomyOracleService,
+    @Inject(forwardRef(() => GuildService))
+    private readonly guildService: GuildService,
+    private readonly treasuryMonitor: TreasuryMonitorService,
   ) {
     this.rpcTimeoutMs = this.config.get<number>('web3.rpcTimeoutMs') ?? 5000;
     this.rpcRequestDeadlineMs = this.config.get<number>('web3.rpcRequestDeadlineMs') ?? 8000;
@@ -116,6 +157,14 @@ export class Web3Service {
         this.logger.warn('Failed to initialize admin wallet - Web3 features disabled');
       }
     }
+  }
+
+  getAdminWallet(): ethers.Wallet | null {
+    return this.adminWallet;
+  }
+
+  getProvider(): ethers.JsonRpcProvider | ethers.FallbackProvider | null {
+    return this.provider;
   }
 
   /**
@@ -150,40 +199,34 @@ export class Web3Service {
    * retrying network detection indefinitely ("failed to detect network ... retry in
    * 1s"), which is exactly how a hung claim turns into a gateway 504.
    */
-  private _buildJsonRpcProvider(url: string): ethers.JsonRpcProvider {
+  private _buildJsonRpcProvider(url: string, chainId?: number): ethers.JsonRpcProvider {
     const request = new ethers.FetchRequest(url);
     request.timeout = this.rpcTimeoutMs;
-    // polling:false — this service only performs request/response reads, never subscribes.
-    return new ethers.JsonRpcProvider(request, undefined, { polling: false });
+    const network = chainId ? ethers.Network.from(chainId) : undefined;
+    return new ethers.JsonRpcProvider(request, network, { polling: false, staticNetwork: network });
   }
 
   /** #44: Ethers.js v6 FallbackProvider with ordered RPC endpoints. */
   private _buildFallbackProvider(): ethers.FallbackProvider {
     const chainId = this.config.get<number>('web3.chainId') ?? 56;
 
-    // The primary default MUST be chosen from the same chain id as the fallbacks. This
-    // used to default to a mainnet dataseed node unconditionally, so a testnet-configured
-    // process ended up with a mainnet primary and testnet fallbacks — and with `quorum: 1`
-    // ethers takes whichever answers first, mixing chains inside a single read.
     const defaultPrimary = chainId === 97
-      ? 'https://bsc-testnet-rpc.publicnode.com'
+      ? 'https://data-seed-prebsc-1-s1.binance.org:8545/'
       : 'https://bsc-dataseed1.binance.org/';
     const primary = this.config.get<string>('web3.bscRpcUrl') ?? defaultPrimary;
 
     const fallbacks = chainId === 97
-      ? ['https://bsc-testnet-rpc.publicnode.com', 'https://endpoints.omniatech.io/v1/bsc/testnet/public']
+      ? ['https://bsc-testnet.publicnode.com', 'https://data-seed-prebsc-2-s1.binance.org:8545/']
       : ['https://bsc-dataseed2.binance.org/', 'https://bsc-dataseed3.binance.org/'];
 
-    const networks = [primary, ...fallbacks].map((url, i) => ({
-      provider: this._buildJsonRpcProvider(url),
+    const uniqueUrls = Array.from(new Set([primary, ...fallbacks]));
+    const networks = uniqueUrls.map((url, i) => ({
+      provider: this._buildJsonRpcProvider(url, chainId),
       priority: i + 1,
-      // Align the stall threshold with the fetch timeout so a dead primary is
-      // abandoned on the same clock it aborts on, instead of 2s < 5s leaving a
-      // half-open request behind.
       stallTimeout: this.rpcTimeoutMs,
       weight: 1,
     }));
-    return new ethers.FallbackProvider(networks, undefined, { quorum: 1 });
+    return new ethers.FallbackProvider(networks, chainId ? ethers.Network.from(chainId) : undefined, { quorum: 1 });
   }
 
   /**
@@ -248,39 +291,50 @@ export class Web3Service {
       );
     }
 
-    // Kill-switch check is FAIL-OPEN, deliberately.
-    //
-    // It is an operator safety lever for market volatility, NOT the authorization gate —
-    // that is trustScore + wallet + balance above. When Redis is unreachable (outage, auth
-    // failure, network blip) blocking here would take down GOLD→FARM conversion for every
-    // player because of an unrelated dependency. The loud ERROR surfaces the degraded state
-    // for ops, and the owner retains pause() as the hard stop.
-    //
-    // If the requirement is instead fail-CLOSED, the fix belongs in DexOracleService — it
-    // should serve the last known state from a local cache rather than propagate the
-    // connection error — not here.
-    let killActive = false;
-    try {
-      // Deadlined for the same reason as the RPC calls: a stalled Redis connection
-      // must not be able to hold an HTTP request open until the proxy gives up.
-      killActive = await this.withDeadline(
-        this.dexOracle.isKillSwitchActive(),
-        this.rpcRequestDeadlineMs,
-        'kill-switch check',
-      );
-    } catch (err) {
-      this.logger.error(
-        `Kill-switch check unavailable, proceeding without it: ${(err as Error).message}`,
+    const rates = await this.getDynamicRates();
+
+    if (rates.killSwitchActive) {
+      throw new ServiceUnavailableException(
+        rates.killSwitchReason ?? 'Claiming paused due to high market volatility. Try again later.',
       );
     }
-    if (killActive) {
-      const reason = await this.withDeadline(
-        this.dexOracle.getKillSwitchReason(),
-        this.rpcRequestDeadlineMs,
-        'kill-switch reason',
-      ).catch(() => null);
-      throw new ServiceUnavailableException(
-        reason ?? 'Claiming paused due to high market volatility. Try again later.',
+
+    const farmPayout = amountToClaim * rates.withdrawRate;
+    if (farmPayout < 1.0) {
+      const minGold = Math.ceil(1.0 / rates.withdrawRate);
+      throw new BadRequestException(
+        `Minimum withdrawal is 1 $FARM (requires at least ${minGold} GOLD at current rate).`,
+      );
+    }
+
+    if (farmPayout > 100_000) {
+      throw new BadRequestException('Maximum withdrawal per transaction is 100,000 $FARM.');
+    }
+
+    if (rates.treasuryFarmBalance < farmPayout) {
+      throw new ServiceUnavailableException('Treasury reserve is protecting liquidity. Please try a smaller amount or wait.');
+    }
+
+    // ── Dual-Layer Protection: Global Daily Drip-Feed & User Tier Daily Quota ──
+    const quota = await this.getCashoutQuota(user);
+
+    if (quota.tier === UserCashoutTier.TIER_0) {
+      throw new ForbiddenException(
+        quota.reason ?? 'Account not eligible for cashout (Tier 0). Link wallet and build trust score to unlock.',
+      );
+    }
+
+    if (farmPayout > quota.globalRemaining) {
+      throw new HttpException(
+        `Global daily cashout pool reached today's limit (${quota.globalSpentToday.toFixed(1)} / ${quota.globalDailyPool.toFixed(1)} FARM). Resets at 00:00 UTC.`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    if (farmPayout > quota.userRemaining) {
+      throw new HttpException(
+        `Withdrawal exceeds your daily cashout limit (${quota.userSpentToday.toFixed(1)} / ${quota.userDailyLimit.toFixed(1)} FARM for ${quota.tierName}). Resets at 00:00 UTC.`,
+        HttpStatus.TOO_MANY_REQUESTS,
       );
     }
 
@@ -288,10 +342,6 @@ export class Web3Service {
       throw new InternalServerErrorException('Signing service not configured');
     }
 
-    // Resolve the domain BEFORE opening the transaction: the digest is bound to
-    // (chainid, claimContract) and getNetwork() may hit the RPC. Never hold a
-    // pessimistic_write row lock across network I/O. (ethers v6 memoises getNetwork(), so
-    // this is one RPC call per process lifetime, not per claim.)
     const claimContract = this.config.get<string>('web3.claimContractAddress') ?? '';
     if (!ethers.isAddress(claimContract)) {
       throw new InternalServerErrorException(
@@ -315,10 +365,6 @@ export class Web3Service {
     await queryRunner.startTransaction();
 
     try {
-      // Never wait forever on a row lock. Postgres defaults lock_timeout to 0 (infinite),
-      // so a sibling transaction holding this user's row — an admin edit, or a request
-      // that is itself stuck — would keep us open until the gateway timed out with 504.
-      // 3s converts that into an immediate, explicit 503.
       await queryRunner.query(`SET LOCAL lock_timeout = '3000ms'`);
 
       const lockedUser = await queryRunner.manager
@@ -344,11 +390,8 @@ export class Web3Service {
         .where('id = :id', { id: user.id })
         .execute();
 
-      const amountWei = ethers.parseUnits(amountToClaim.toString(), 18);
+      const amountWei = ethers.parseUnits(farmPayout.toFixed(18), 18);
 
-      // Sign against the wallet read UNDER the row lock. The pre-lock copy can be stale,
-      // and FarmTokenClaim only pays out to the address bound into the signature — signing
-      // a stale address produces a signature the player's current wallet cannot use.
       const walletAddress = lockedUser.walletAddress;
       if (!walletAddress) {
         throw new BadRequestException(
@@ -382,16 +425,38 @@ export class Web3Service {
         .orUpdate(['wallet_address', 'amount_gold', 'amount_wei', 'status'], ['user_id', 'nonce'])
         .execute();
 
+      // Record gold burn in gold_transactions for economy oracle
+      await this.economyOracle.record(queryRunner, {
+        userId: user.id,
+        amount: amountToClaim,
+        type: 'BURN',
+        category: 'CLAIM_WITHDRAW',
+        description: `Convert ${amountToClaim} GOLD to ${farmPayout.toFixed(4)} FARM (rate: ${rates.goldPerFarmWithdraw.toFixed(2)} G/FARM, alpha: ${rates.alpha})`,
+      });
+
       await queryRunner.commitTransaction();
 
-      this.logger.log(`Claim signature: user=${user.id} amount=${amountToClaim} nonce=${currentNonce}`);
+      // Atomically track spent daily quotas in Redis (48h TTL)
+      const todayUtc = new Date().toISOString().slice(0, 10);
+      const CASHOUT_KEY_TTL = 172800; // 48h
+      await Promise.all([
+        this.redis.incrByFloat(`cashout:global:${todayUtc}`, farmPayout, CASHOUT_KEY_TTL),
+        this.redis.incrByFloat(`cashout:user:${user.id}:${todayUtc}`, farmPayout, CASHOUT_KEY_TTL),
+      ]);
+
+      this.logger.log(`Claim signature: user=${user.id} amountGold=${amountToClaim} farmPayout=${farmPayout.toFixed(4)} nonce=${currentNonce}`);
 
       return {
-        // The address bound into the signature — the client must call claimTokens from it.
         userAddress: walletAddress,
         amountWei: amountWei.toString(),
         nonce: currentNonce,
         signature,
+        farmAmount: Number(farmPayout.toFixed(6)),
+        goldBurned: amountToClaim,
+        rate: rates.goldPerFarmWithdraw,
+        alpha: rates.alpha,
+        tier: quota.tier,
+        remainingDailyQuota: Math.max(0, Number((quota.userRemaining - farmPayout).toFixed(2))),
       };
     } catch (err) {
       await queryRunner.rollbackTransaction();
@@ -425,13 +490,30 @@ export class Web3Service {
     }
   }
 
-  async refundClaim(userId: string, nonce: number) {
+  async refundClaim(userId: string, nonce: number, unbroadcasted = false) {
     const intent = await this.dataSource.manager.findOne(ClaimIntent, {
       where: { userId, nonce, status: 'pending' },
     });
 
     if (!intent) {
       throw new BadRequestException('No pending claim found for this nonce — already refunded or completed.');
+    }
+
+    // Cooldown check to prevent race with pending mempool transactions.
+    // When unbroadcasted is true (e.g. simulation failed, user cancelled before send),
+    // or on testnet, refund is immediate.
+    const isTestnet = this.config.get<boolean>('web3.isTestnet') ?? true;
+    const defaultCooldown = isTestnet ? 0 : 15;
+    const refundCooldownSec = unbroadcasted
+      ? 0
+      : (this.config.get<number>('web3.claimRefundCooldownSec') ?? defaultCooldown);
+
+    const elapsedSec = Math.floor((Date.now() - new Date(intent.createdAt).getTime()) / 1000);
+    if (!unbroadcasted && elapsedSec < refundCooldownSec) {
+      const remainingSec = refundCooldownSec - elapsedSec;
+      throw new BadRequestException(
+        `Claim intent was submitted recently. Please wait ${remainingSec} more second${remainingSec !== 1 ? 's' : ''} to allow pending blockchain transactions to settle before requesting a refund.`,
+      );
     }
 
     // Confirming the nonce is STILL unused on-chain is the ONLY thing that stops a
@@ -474,10 +556,21 @@ export class Web3Service {
 
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
-    await queryRunner.startTransaction();
+    await queryRunner.startTransaction('SERIALIZABLE');
 
     try {
-      const amount = Number(intent.amountGold);
+      // Re-verify and lock the intent inside the transaction to prevent concurrent double-refunds
+      const lockedIntent = await queryRunner.manager
+        .createQueryBuilder(ClaimIntent, 'ci')
+        .where('ci.id = :id AND ci.status = :status', { id: intent.id, status: 'pending' })
+        .setLock('pessimistic_write')
+        .getOne();
+
+      if (!lockedIntent) {
+        throw new BadRequestException('Claim already processed or refunded.');
+      }
+
+      const amount = Number(lockedIntent.amountGold);
       await queryRunner.manager
         .createQueryBuilder()
         .update(User)
@@ -485,8 +578,22 @@ export class Web3Service {
         .where('id = :id', { id: userId })
         .execute();
 
-      await queryRunner.manager.update(ClaimIntent, { id: intent.id }, { status: 'refunded' });
+      await queryRunner.manager.update(ClaimIntent, { id: lockedIntent.id }, { status: 'refunded' });
       await queryRunner.commitTransaction();
+
+      // Rollback daily cashout quota in Redis
+      try {
+        const farmRefunded = Number(ethers.formatUnits(lockedIntent.amountWei, 18));
+        if (farmRefunded > 0) {
+          const intentDate = new Date(lockedIntent.createdAt).toISOString().slice(0, 10);
+          await Promise.all([
+            this.redis.decrByFloat(`cashout:global:${intentDate}`, farmRefunded),
+            this.redis.decrByFloat(`cashout:user:${userId}:${intentDate}`, farmRefunded),
+          ]);
+        }
+      } catch (redisErr) {
+        this.logger.warn(`Failed to rollback cashout quota on refund: ${(redisErr as Error).message}`);
+      }
 
       this.logger.log(`Claim refunded: user=${userId} nonce=${nonce} gold=+${amount}`);
       return { refunded: true, goldRestored: amount };
@@ -496,6 +603,101 @@ export class Web3Service {
     } finally {
       await queryRunner.release();
     }
+  }
+
+  async refundAllPendingClaims(userId: string) {
+    const pendingIntents = await this.dataSource.manager.find(ClaimIntent, {
+      where: { userId, status: 'pending' },
+      order: { nonce: 'ASC' },
+    });
+
+    if (!pendingIntents || pendingIntents.length === 0) {
+      return { refundedCount: 0, totalGoldRestored: 0 };
+    }
+
+    const claimContractAddress = this.config.get<string>('web3.claimContractAddress') ?? '';
+    let contract: ethers.Contract | null = null;
+    if (this.provider && ethers.isAddress(claimContractAddress)) {
+      contract = new ethers.Contract(
+        claimContractAddress,
+        ['function isNonceUsed(address,uint256) external view returns (bool)'],
+        this.provider,
+      );
+    }
+
+    let totalGoldRestored = 0;
+    let refundedCount = 0;
+
+    for (const intent of pendingIntents) {
+      let nonceUsed = false;
+      if (contract) {
+        try {
+          nonceUsed = await this.withDeadline(
+            contract.isNonceUsed(intent.walletAddress, intent.nonce) as Promise<boolean>,
+            this.rpcRequestDeadlineMs,
+            'isNonceUsed()',
+          );
+        } catch (err) {
+          this.logger.warn(`Could not verify nonce ${intent.nonce} on-chain for batch refund: ${(err as Error).message}`);
+          continue;
+        }
+      }
+
+      if (nonceUsed) {
+        await this.dataSource.manager.update(ClaimIntent, { id: intent.id }, { status: 'completed' });
+        continue;
+      }
+
+      const queryRunner = this.dataSource.createQueryRunner();
+      await queryRunner.connect();
+      await queryRunner.startTransaction('SERIALIZABLE');
+      try {
+        const lockedIntent = await queryRunner.manager
+          .createQueryBuilder(ClaimIntent, 'ci')
+          .where('ci.id = :id AND ci.status = :status', { id: intent.id, status: 'pending' })
+          .setLock('pessimistic_write')
+          .getOne();
+
+        if (lockedIntent) {
+          const amount = Number(lockedIntent.amountGold);
+          await queryRunner.manager
+            .createQueryBuilder()
+            .update(User)
+            .set({ goldBalance: () => `"gold_balance" + ${amount}` })
+            .where('id = :id', { id: userId })
+            .execute();
+
+          await queryRunner.manager.update(ClaimIntent, { id: lockedIntent.id }, { status: 'refunded' });
+          totalGoldRestored += amount;
+          refundedCount++;
+
+          // Rollback daily cashout quota in Redis
+          try {
+            const farmRefunded = Number(ethers.formatUnits(lockedIntent.amountWei, 18));
+            if (farmRefunded > 0) {
+              const intentDate = new Date(lockedIntent.createdAt).toISOString().slice(0, 10);
+              await Promise.all([
+                this.redis.decrByFloat(`cashout:global:${intentDate}`, farmRefunded),
+                this.redis.decrByFloat(`cashout:user:${userId}:${intentDate}`, farmRefunded),
+              ]);
+            }
+          } catch {
+            // Redis error should not block refund
+          }
+        }
+        await queryRunner.commitTransaction();
+      } catch (err) {
+        await queryRunner.rollbackTransaction();
+      } finally {
+        await queryRunner.release();
+      }
+    }
+
+    if (totalGoldRestored > 0) {
+      this.logger.log(`Batch refunded ${refundedCount} pending claims for user=${userId}: +${totalGoldRestored} GOLD`);
+    }
+
+    return { refundedCount, totalGoldRestored };
   }
 
   async getShopDogs(userId: string) {
@@ -590,6 +792,120 @@ export class Web3Service {
     }
   }
 
+  async rollbackTokenizeDog(user: User, nonce: number, count = 1) {
+    if (!user.walletAddress) throw new BadRequestException('No wallet linked');
+
+    // 1. Verify on-chain that this nonce was NOT used
+    const fusionAddr = this.config.get<string>('web3.gachaContractAddress');
+    if (fusionAddr) {
+      try {
+        const provider = this.getProvider();
+        const fusionAbi = ['function usedTokenizeNonces(bytes32) view returns (bool)'];
+        const fusion = new ethers.Contract(fusionAddr, fusionAbi, provider);
+        const nonceKey = ethers.solidityPackedKeccak256(['address', 'uint256'], [user.walletAddress, nonce]);
+        const used = await fusion.usedTokenizeNonces(nonceKey);
+        if (used) {
+          throw new BadRequestException('This tokenization was already completed on-chain.');
+        }
+      } catch (err: any) {
+        if (err instanceof BadRequestException) throw err;
+        this.logger.warn(`Could not verify onchain nonce ${nonce}: ${err.message}`);
+      }
+    }
+
+    // 2. Restore the dog in database
+    const toRestore = count === 3 ? 3 : 1;
+    for (let i = 0; i < toRestore; i++) {
+      await this.dataSource.manager.insert(NftGuardDog, {
+        ownerId: user.id,
+        tokenId: 0,
+        dogType: 'dog_stray',
+        defensePower: 10,
+        isActive: true,
+        isGuarding: true,
+        source: 'shop',
+        lastFedAt: new Date(),
+      });
+    }
+
+    this.logger.log(`Rollback tokenize dog: restored ${toRestore} stray dog(s) for user=${user.id}`);
+    return { restored: true, count: toRestore };
+  }
+
+  async redeemShards(user: User, count: number) {
+    if (count < 1 || count > 10) {
+      throw new BadRequestException('count must be between 1 and 10');
+    }
+
+    if (!user.walletAddress) {
+      throw new BadRequestException('No wallet address linked. Please link your BSC wallet first.');
+    }
+
+    if (!this.adminWallet) {
+      throw new InternalServerErrorException('Signing service not configured');
+    }
+
+    const shardsNeeded = count * 100;
+
+    // Check user's soul shard balance from user_items
+    const shardItem = await this.dataSource.manager.query(
+      `SELECT quantity FROM user_items WHERE user_id = $1 AND item_type = 'soul_shard'`,
+      [user.id],
+    );
+    const currentShards = shardItem && shardItem.length > 0 ? Number(shardItem[0].quantity) : 0;
+
+    if (currentShards < shardsNeeded) {
+      throw new BadRequestException(
+        `Need ${shardsNeeded} Soul Shards to redeem, but currently have ${currentShards}.`,
+      );
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const lockedUser = await queryRunner.manager
+        .createQueryBuilder(User, 'u')
+        .where('u.id = :id', { id: user.id })
+        .setLock('pessimistic_write')
+        .getOne();
+      if (!lockedUser) throw new BadRequestException('User not found');
+
+      const currentNonce = lockedUser.nonce;
+      await queryRunner.manager
+        .createQueryBuilder()
+        .update(User)
+        .set({ nonce: () => '"nonce" + 1' })
+        .where('id = :id', { id: user.id })
+        .execute();
+
+      // Sign: keccak256(abi.encodePacked("redeem", msg.sender, count, nonce))
+      const messageHash = ethers.solidityPackedKeccak256(
+        ['string', 'address', 'uint256', 'uint256'],
+        ['redeem', user.walletAddress, count, currentNonce],
+      );
+      const signature = await this.adminWallet.signMessage(ethers.getBytes(messageHash));
+
+      await queryRunner.commitTransaction();
+
+      this.logger.log(`Redeem shards: user=${user.id} count=${count} nonce=${currentNonce}`);
+
+      return {
+        walletAddress: user.walletAddress,
+        count,
+        nonce: currentNonce,
+        signature,
+        contractAddress: this.config.get<string>('web3.gachaContractAddress') ?? '',
+      };
+    } catch (err) {
+      await queryRunner.rollbackTransaction();
+      throw err;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
   async markClaimCompleted(userId: string, nonce: number) {
     await this.dataSource.manager.update(
       ClaimIntent,
@@ -652,33 +968,96 @@ export class Web3Service {
         await queryRunner.manager.update(
           NftGuardDog,
           { ownerId: userId, source: 'nft' },
-          { isActive: false },
+          { isActive: false, listingId: null },
         );
 
         for (const dog of ownedDogs) {
-          const existing = await queryRunner.manager.findOne(NftGuardDog, {
+          const existingDogs = await queryRunner.manager.find(NftGuardDog, {
             where: { ownerId: userId, tokenId: dog.tokenId, source: 'nft' },
+            order: { id: 'ASC' },
           });
 
-          if (existing) {
-            // Preserve isGuarding — user may have put this dog in storage intentionally
-            await queryRunner.manager.update(NftGuardDog, { id: existing.id }, {
+          // Activate existing records up to dog.balance
+          const toUpdateCount = Math.min(existingDogs.length, dog.balance);
+          for (let i = 0; i < toUpdateCount; i++) {
+            await queryRunner.manager.update(NftGuardDog, { id: existingDogs[i].id }, {
               isActive: true,
               defensePower: dog.defensePower,
               dogType: dog.dogType,
-            });
-          } else {
-            // First time seeing this dog — default to guarding
-            await queryRunner.manager.insert(NftGuardDog, {
-              ownerId: userId,
-              tokenId: dog.tokenId,
-              dogType: dog.dogType,
-              defensePower: dog.defensePower,
-              isActive: true,
-              isGuarding: true,
-              source: 'nft',
             });
           }
+
+          // If user owns MORE on-chain than existing DB records, insert the additional dogs
+          if (dog.balance > existingDogs.length) {
+            const needed = dog.balance - existingDogs.length;
+            for (let i = 0; i < needed; i++) {
+              await queryRunner.manager.insert(NftGuardDog, {
+                ownerId: userId,
+                tokenId: dog.tokenId,
+                dogType: dog.dogType,
+                defensePower: dog.defensePower,
+                isActive: true,
+                // Default first dog to guarding if none were existing; extra dogs default to storage (isGuarding: false)
+                isGuarding: existingDogs.length === 0 && i === 0,
+                source: 'nft',
+              });
+            }
+          }
+
+          // Reconcile marketplace listings for this tokenId (auto-cancel surplus if dogs were burned/fused/sold)
+          const activeListings = await queryRunner.manager.find(MarketplaceListing, {
+            where: { sellerId: userId, tokenId: dog.tokenId, assetType: 'nft', status: 'active' },
+            order: { createdAt: 'DESC' },
+          });
+          if (activeListings.length > dog.balance) {
+            const surplus = activeListings.slice(0, activeListings.length - dog.balance);
+            for (const l of surplus) {
+              await queryRunner.manager.update(MarketplaceListing, { id: l.id }, { status: 'cancelled' });
+            }
+          }
+
+          // Link remaining active listings 1-to-1 to active dogs
+          const remainingListings = await queryRunner.manager.find(MarketplaceListing, {
+            where: { sellerId: userId, tokenId: dog.tokenId, assetType: 'nft', status: 'active' },
+            order: { createdAt: 'ASC' },
+          });
+          const activeDogs = await queryRunner.manager.find(NftGuardDog, {
+            where: { ownerId: userId, tokenId: dog.tokenId, source: 'nft', isActive: true },
+            order: { isGuarding: 'ASC', id: 'ASC' },
+          });
+
+          for (let i = 0; i < activeDogs.length; i++) {
+            const d = activeDogs[i];
+            const listing = remainingListings[i];
+            if (listing) {
+              // Mutual exclusivity: Listed dog CANNOT guard farm
+              await queryRunner.manager.update(NftGuardDog, { id: d.id }, {
+                listingId: listing.id,
+                isGuarding: false,
+              });
+            } else {
+              await queryRunner.manager.update(NftGuardDog, { id: d.id }, {
+                listingId: null,
+              });
+            }
+          }
+        }
+
+        // Cancel any active marketplace listings for tokens user no longer holds
+        const validTokenIds = ownedDogs.filter((d) => d.balance > 0).map((d) => d.tokenId);
+        const orphanListingsQb = queryRunner.manager
+          .createQueryBuilder(MarketplaceListing, 'l')
+          .where('l.seller_id = :userId AND l.asset_type = :assetType AND l.status = :status', {
+            userId,
+            assetType: 'nft',
+            status: 'active',
+          });
+        if (validTokenIds.length > 0) {
+          orphanListingsQb.andWhere('l.token_id NOT IN (:...validTokenIds)', { validTokenIds });
+        }
+        const orphanListings = await orphanListingsQb.getMany();
+        for (const l of orphanListings) {
+          await queryRunner.manager.update(MarketplaceListing, { id: l.id }, { status: 'cancelled' });
         }
 
         // Sync soul shard balance → user_items table (upsert exact on-chain count)
@@ -699,12 +1078,20 @@ export class Web3Service {
 
         await queryRunner.commitTransaction();
 
-        const totalNftDefense = ownedDogs.reduce((sum, d) => sum + d.defensePower, 0);
+        const allActiveGuarding = await this.dataSource.manager.find(NftGuardDog, {
+          where: { ownerId: userId, isActive: true, isGuarding: true },
+        });
+        const totalNftDefense = allActiveGuarding.reduce((sum, d) => sum + d.defensePower, 0);
+
+        const totalActiveDogs = await this.dataSource.manager.find(NftGuardDog, {
+          where: { ownerId: userId, isActive: true, source: 'nft' },
+        });
+
         this.logger.log(
-          `NFT sync: user=${userId} dogs=${ownedDogs.length} defense=${totalNftDefense} shards=${shardBalance}`,
+          `NFT sync: user=${userId} dogs=${totalActiveDogs.length} defense=${totalNftDefense} shards=${shardBalance}`,
         );
 
-        return { synced: ownedDogs.length, totalNftDefense, dogs: ownedDogs, shards: shardBalance };
+        return { synced: totalActiveDogs.length, totalNftDefense, dogs: ownedDogs, shards: shardBalance };
       } catch (err) {
         await queryRunner.rollbackTransaction();
         throw err;
@@ -724,19 +1111,97 @@ export class Web3Service {
       order: { defensePower: 'DESC' },
     });
 
-    const ownedBreeds = dogs.map((d) => ({
-      tokenId: d.tokenId,
-      dogType: d.dogType,
-      defensePower: d.defensePower,
-      isGuarding: d.isGuarding,
-    }));
+    const activeListings = await this.dataSource.manager.find(MarketplaceListing, {
+      where: { sellerId: userId, assetType: 'nft', status: 'active' },
+    });
+
+    const ownedBreeds = dogs.map((d) => {
+      const isListed = !!d.listingId || activeListings.some((l) => l.tokenId === d.tokenId && l.id === d.listingId);
+      return {
+        id: d.id,
+        tokenId: d.tokenId,
+        dogType: d.dogType,
+        defensePower: d.defensePower,
+        isGuarding: d.isGuarding,
+        listingId: d.listingId ?? null,
+        isListed,
+      };
+    });
 
     const guardingDogs = dogs.filter((d) => d.isGuarding);
+
+    const tierStats: Record<number, {
+      total: number;
+      guarding: number;
+      listed: number;
+      available: number;
+      canFuse: boolean;
+    }> = {};
+
+    for (let t = 1; t <= 4; t++) {
+      const tierDogs = dogs.filter((d) => d.tokenId === t);
+      const total = tierDogs.length;
+      const guarding = tierDogs.filter((d) => d.isGuarding).length;
+      const activeListingsForTier = activeListings.filter((l) => l.tokenId === t).length;
+      const dbListedForTier = tierDogs.filter((d) => !!d.listingId).length;
+      const listed = Math.max(dbListedForTier, activeListingsForTier);
+      const available = Math.max(0, total - guarding - listed);
+      tierStats[t] = {
+        total,
+        guarding,
+        listed,
+        available,
+        canFuse: available >= 3,
+      };
+    }
+
+    const shardItem = await this.dataSource.manager.query(
+      `SELECT quantity FROM user_items WHERE user_id = $1 AND item_type = 'soul_shard'`,
+      [userId],
+    );
+    const soulShards = shardItem && shardItem.length > 0 ? Number(shardItem[0].quantity) : 0;
+
     return {
       ownedBreeds,
+      tierStats,
       totalNftDefense: guardingDogs.reduce((sum, d) => sum + d.defensePower, 0),
       breedCount: dogs.length,
+      soulShards,
     };
+  }
+
+  async checkFusionEligibility(userId: string, baseTierId: number) {
+    if (baseTierId < 1 || baseTierId > 4) {
+      throw new BadRequestException('Invalid dog tier for fusion (must be 1-4)');
+    }
+
+    const status = await this.getNftStatus(userId);
+    const stat = status.tierStats?.[baseTierId];
+    const dogName = DOG_DEFENSE_MAP[baseTierId]?.dogType || `Tier ${baseTierId}`;
+
+    if (!stat || stat.available < 3) {
+      if (stat && stat.listed > 0 && stat.available < 3) {
+        throw new BadRequestException({
+          error: 'DOGS_LISTED_ON_MARKET',
+          message: `Cannot fuse: ${stat.listed} of your ${dogName}s are currently listed on the Marketplace. Please cancel your listing in Marketplace before fusing.`,
+          tierStats: stat,
+        });
+      }
+      if (stat && stat.guarding > 0 && stat.available < 3) {
+        throw new BadRequestException({
+          error: 'DOGS_GUARDING_FARM',
+          message: `Cannot fuse: ${stat.guarding} of your ${dogName}s are currently guarding your farm. Please recall them to Storage before fusing.`,
+          tierStats: stat,
+        });
+      }
+      throw new BadRequestException({
+        error: 'INSUFFICIENT_AVAILABLE_DOGS',
+        message: `Cannot fuse: You need at least 3 available ${dogName}s in storage, but only have ${stat?.available ?? 0}.`,
+        tierStats: stat,
+      });
+    }
+
+    return { eligible: true, baseTierId, available: stat.available, tierStats: stat };
   }
 
   async setDogGuarding(userId: string, tokenId: number, isGuarding: boolean) {
@@ -744,6 +1209,12 @@ export class Web3Service {
       where: { ownerId: userId, tokenId, source: 'nft', isActive: true },
     });
     if (!dog) throw new BadRequestException('Guard dog not found in your wallet');
+
+    if (isGuarding && dog.listingId) {
+      throw new BadRequestException(
+        'This dog is currently listed for sale on the Marketplace. Cancel the listing before deploying it to guard your farm.',
+      );
+    }
 
     await this.dataSource.manager.update(NftGuardDog, { id: dog.id }, { isGuarding });
     this.logger.log(`Dog guarding toggle: user=${userId} tokenId=${tokenId} isGuarding=${isGuarding}`);
@@ -756,6 +1227,12 @@ export class Web3Service {
       where: { id: dogId, ownerId: userId, isActive: true },
     });
     if (!dog) throw new BadRequestException('Guard dog not found');
+
+    if (isGuarding && dog.listingId) {
+      throw new BadRequestException(
+        'This dog is currently listed for sale on the Marketplace. Cancel the listing before deploying it to guard your farm.',
+      );
+    }
 
     await this.dataSource.manager.update(NftGuardDog, { id: dogId }, { isGuarding });
     this.logger.log(`Dog guarding by id: user=${userId} dogId=${dogId} isGuarding=${isGuarding}`);
@@ -774,7 +1251,8 @@ export class Web3Service {
       });
       if (!dog) throw new BadRequestException('Guard dog not found');
 
-      const hoursSinceFed = (Date.now() - new Date(dog.lastFedAt).getTime()) / 3_600_000;
+      const fedTime = dog.lastFedAt ? new Date(dog.lastFedAt).getTime() : 0;
+      const hoursSinceFed = fedTime > 0 ? (Date.now() - fedTime) / 3_600_000 : 999;
       if (hoursSinceFed < FEED_COOLDOWN_HOURS) {
         const nextFeedHours = Math.ceil(FEED_COOLDOWN_HOURS - hoursSinceFed);
         throw new BadRequestException(`Dog already fed. Next feeding in ${nextFeedHours}h`);
@@ -787,6 +1265,14 @@ export class Web3Service {
       await manager.decrement(User, { id: userId }, 'goldBalance', FEED_COST);
       await manager.update(NftGuardDog, { id: dogId }, { lastFedAt: new Date() });
 
+      await this.economyOracle.record(manager, {
+        userId,
+        amount: FEED_COST,
+        type: 'BURN',
+        category: 'DOG_FEED',
+        description: `Fed guard dog ${dog.dogType}`,
+      });
+
       const hoursSinceFedForMsg = hoursSinceFed;
       const wasHungry = hoursSinceFedForMsg >= 24;
       return {
@@ -797,138 +1283,196 @@ export class Web3Service {
     });
   }
 
-  // ── Exchange Rate Engine (#18 + #73) ────────────────────────────
-  private cachedRate: number = 1.0;
-  private cachedGoldCirculating: number = 0;
-  private cachedFarmInTreasury: number = 0;
-  private cachedFarmPriceUsd: number = 0;
-  private cachedFarmPriceBnb: number = 0;
-  private cachedPriceSource: string = 'treasury_ratio';
-  private cachedKillSwitchActive: boolean = false;
-  private rateCachedAt: number = 0;
-  private readonly RATE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  // ── Algorithmic Dynamic Peg Rate Engine (PRD 1, PRD 2 & Dynamic Peg Doc) ──────────
 
-  async getExchangeRate(): Promise<{
-    goldPerFarm: number; totalGoldCirculating: number; farmInTreasury: number;
-    farmPriceUsd: number; farmPriceBnb: number; source: string;
-    inflationWarning: boolean; killSwitchActive: boolean;
-    lastUpdated: string; note: string;
+  async getDynamicRates(): Promise<{
+    farmPriceUsd: number;
+    farmPriceBnb: number;
+    baseGoldUsdValue: number;
+    baseRate: number;
+    alpha: number;
+    depositFee: number;
+    withdrawFee: number;
+    depositRate: number;
+    withdrawRate: number;
+    goldPerFarmWithdraw: number;
+    goldMinted24h: number;
+    goldBurned24h: number;
+    burnMintRatio: number;
+    economyStatus: 'balanced' | 'deflationary' | 'inflationary';
+    treasuryFarmBalance: number;
+    killSwitchActive: boolean;
+    killSwitchReason: string | null;
+    lastUpdated: string;
   }> {
-    if (Date.now() - this.rateCachedAt < this.RATE_TTL_MS) {
-      return this.buildRateResponse('cached');
+    // 1. Live DEX price from DexOracleService
+    const dexPrice = await this.dexOracle.getDexPrice();
+    let farmPriceUsd = dexPrice?.priceUsd ?? 0;
+    let farmPriceBnb = dexPrice?.priceBnb ?? 0;
+    if (!farmPriceUsd || farmPriceUsd <= 0) {
+      farmPriceUsd = 0.000146;
+      farmPriceBnb = 0.0000002;
     }
-    await this.syncExchangeRate();
-    return this.buildRateResponse(this.cachedPriceSource === 'dex' ? 'dex' : 'treasury_ratio');
-  }
 
-  private buildRateResponse(note: string) {
+    // 2. Economy stats from EconomyOracleService
+    const economyStats = await this.economyOracle.getEconomyStats();
+    const alpha = economyStats.alpha;
+
+    // 3. Pool balance from Claim contract (or treasury)
+    let poolBalance = 50000;
+    try {
+      const claimContractAddress = this.config.get<string>('web3.claimContractAddress');
+      const farmTokenAddress = this.config.get<string>('web3.farmTokenAddress');
+      if (this.provider && claimContractAddress && farmTokenAddress) {
+        const erc20 = new ethers.Contract(
+          farmTokenAddress,
+          ['function balanceOf(address) view returns (uint256)'],
+          this.provider,
+        );
+        const bal = (await this.withDeadline(
+          erc20.balanceOf(claimContractAddress),
+          this.rpcRequestDeadlineMs,
+          'claimContract balanceOf',
+        )) as bigint;
+        poolBalance = Number(ethers.formatEther(bal));
+      }
+    } catch (err) {
+      this.logger.warn(`Could not read claim contract FARM balance: ${(err as Error).message}`);
+    }
+
+    // 4. Volatility & Liquidity Kill-Switch
+    let killSwitchActive = false;
+    let killSwitchReason: string | null = null;
+    try {
+      killSwitchActive = await this.dexOracle.isKillSwitchActive();
+      if (killSwitchActive) {
+        killSwitchReason = await this.dexOracle.getKillSwitchReason();
+      }
+    } catch {
+      // ignore
+    }
+
+    if (poolBalance < this.MIN_TREASURY_RESERVE_FARM) {
+      killSwitchActive = true;
+      killSwitchReason = 'Treasury reserve is protecting liquidity';
+    }
+
+    // 5. Algorithmic Dynamic Peg formulas:
+    // Base_Rate = FARM_USD / BASE_GOLD_USD
+    const baseRate = farmPriceUsd / this.BASE_GOLD_USD_VALUE;
+    // Deposit Rate = Base_Rate * (1 - DEPOSIT_FEE)
+    const depositRate = baseRate * (1 - this.DEPOSIT_FEE);
+    // Withdraw Rate = (1 / Base_Rate) * Alpha * (1 - WITHDRAW_FEE)
+    const withdrawRate = (1 / baseRate) * alpha * (1 - this.WITHDRAW_FEE);
+    const goldPerFarmWithdraw = withdrawRate > 0 ? 1 / withdrawRate : baseRate;
+
     return {
-      goldPerFarm: this.cachedRate,
-      totalGoldCirculating: this.cachedGoldCirculating,
-      farmInTreasury: this.cachedFarmInTreasury,
-      farmPriceUsd: this.cachedFarmPriceUsd,
-      farmPriceBnb: this.cachedFarmPriceBnb,
-      source: this.cachedPriceSource,
-      inflationWarning: this.cachedRate > 200,
-      killSwitchActive: this.cachedKillSwitchActive,
-      lastUpdated: new Date(this.rateCachedAt).toISOString(),
-      note,
+      farmPriceUsd: Number(farmPriceUsd.toFixed(8)),
+      farmPriceBnb: Number(farmPriceBnb.toFixed(8)),
+      baseGoldUsdValue: this.BASE_GOLD_USD_VALUE,
+      baseRate: Number(baseRate.toFixed(4)),
+      alpha: Number(alpha.toFixed(4)),
+      depositFee: this.DEPOSIT_FEE,
+      withdrawFee: this.WITHDRAW_FEE,
+      depositRate: Number(depositRate.toFixed(4)),
+      withdrawRate: Number(withdrawRate.toFixed(6)),
+      goldPerFarmWithdraw: Number(goldPerFarmWithdraw.toFixed(2)),
+      goldMinted24h: economyStats.goldMinted24h,
+      goldBurned24h: economyStats.goldBurned24h,
+      burnMintRatio: economyStats.burnMintRatio,
+      economyStatus: economyStats.status,
+      treasuryFarmBalance: Number(poolBalance.toFixed(2)),
+      killSwitchActive,
+      killSwitchReason,
+      lastUpdated: new Date().toISOString(),
     };
   }
 
-  @Cron('*/5 * * * *')
-  async syncExchangeRate(): Promise<void> {
-    try {
-      // Primary: DEX price from Redis (populated by DexOracleService every 3 min)
-      const usd = await this.redis.get('dex:farm:price:usd');
-      const bnb = await this.redis.get('dex:farm:price:bnb');
-      const usdNum = Number(usd);
-      const bnbNum = Number(bnb);
+  // ── Exchange Rate Endpoint (Legacy compatibility + Dynamic Peg) ─────────────────
+  async getExchangeRate(): Promise<{
+    goldPerFarm: number;
+    totalGoldCirculating: number;
+    farmInTreasury: number;
+    farmPriceUsd: number;
+    farmPriceBnb: number;
+    source: string;
+    inflationWarning: boolean;
+    killSwitchActive: boolean;
+    lastUpdated: string;
+    note: string;
+    baseGoldUsdValue: number;
+    baseRate: number;
+    alpha: number;
+    depositFee: number;
+    withdrawFee: number;
+    depositRate: number;
+    withdrawRate: number;
+    goldMinted24h: number;
+    goldBurned24h: number;
+    burnMintRatio: number;
+    economyStatus: string;
+  }> {
+    const dynamic = await this.getDynamicRates();
 
-      if (usd != null && bnb != null && Number.isFinite(usdNum) && usdNum > 0 && Number.isFinite(bnbNum) && bnbNum > 0) {
-        this.cachedFarmPriceUsd = usdNum;
-        this.cachedFarmPriceBnb = bnbNum;
-        this.cachedRate = Number((0.001 / usdNum).toFixed(4)); // 1 GOLD = $0.001
-        this.cachedPriceSource = 'dex';
-      } else {
-        // Fallback: treasury balance ratio
-        const [{ total }] = await this.dataSource.manager.query(
-          `SELECT COALESCE(SUM(gold_balance), 0)::float AS total FROM users`,
-        ) as [{ total: number }];
-        const goldCirc = Number(total);
-        let farmInTreasury = 0;
-        if (this.provider && this.adminWallet) {
-          const farmTokenAddress = this.config.get<string>('web3.farmTokenAddress') ?? '';
-          if (farmTokenAddress && farmTokenAddress.length > 10) {
-            // Contained RPC read: a node outage here must not abort the whole cron and
-            // reset the cached rate to the 1.0 default. Treasury balance is a bonus
-            // signal — 0 simply means "ratio unavailable", which the response reports.
-            try {
-              const erc20ABI = ['function balanceOf(address) view returns (uint256)'];
-              const token = new ethers.Contract(farmTokenAddress, erc20ABI, this.provider);
-              const bal = await token.balanceOf(this.adminWallet.address) as bigint;
-              farmInTreasury = Number(ethers.formatEther(bal));
-            } catch (err) {
-              this.logger.warn(
-                `Treasury FARM balance unavailable: ${(err as Error).message}`,
-              );
-            }
-          }
-        }
-        this.cachedGoldCirculating = goldCirc;
-        this.cachedFarmInTreasury = farmInTreasury;
-        this.cachedRate = farmInTreasury > 0 && goldCirc > 0
-          ? Number((goldCirc / farmInTreasury).toFixed(4))
-          : 1.0;
-        this.cachedPriceSource = 'treasury_ratio';
-      }
+    const [{ total }] = (await this.dataSource.manager.query(
+      `SELECT COALESCE(SUM(gold_balance), 0)::float AS total FROM users`,
+    )) as [{ total: number }];
 
-      // Redis is a separate dependency from the chain. A blip must not discard a rate
-      // we just computed from DEX prices — keep the last known kill-switch state.
-      try {
-        const ks = await this.redis.get('kill_switch:active');
-        this.cachedKillSwitchActive = !!ks;
-      } catch (err) {
-        this.logger.warn(
-          `Kill-switch state unavailable, keeping last known value: ${(err as Error).message}`,
-        );
-      }
-    } catch {
-      this.cachedRate = 1.0;
-    } finally {
-      this.rateCachedAt = Date.now();
-    }
+    return {
+      goldPerFarm: dynamic.goldPerFarmWithdraw,
+      totalGoldCirculating: Number(total) || 0,
+      farmInTreasury: dynamic.treasuryFarmBalance,
+      farmPriceUsd: dynamic.farmPriceUsd,
+      farmPriceBnb: dynamic.farmPriceBnb,
+      source: 'pancakeswap-v2-dynamic-peg',
+      inflationWarning: dynamic.alpha < 0.7,
+      killSwitchActive: dynamic.killSwitchActive,
+      lastUpdated: dynamic.lastUpdated,
+      note: dynamic.killSwitchReason ?? `Dynamic Peg (alpha=${dynamic.alpha}, baseRate=${dynamic.baseRate})`,
+      baseGoldUsdValue: dynamic.baseGoldUsdValue,
+      baseRate: dynamic.baseRate,
+      alpha: dynamic.alpha,
+      depositFee: dynamic.depositFee,
+      withdrawFee: dynamic.withdrawFee,
+      depositRate: dynamic.depositRate,
+      withdrawRate: dynamic.withdrawRate,
+      goldMinted24h: dynamic.goldMinted24h,
+      goldBurned24h: dynamic.goldBurned24h,
+      burnMintRatio: dynamic.burnMintRatio,
+      economyStatus: dynamic.economyStatus,
+    };
   }
 
-  // ── $FARM → GOLD Deposit Flow (#72) ─────────────────────────────
+  // ── $FARM → GOLD Deposit Flow ───────────────────────────────────
 
-  // Fixed deposit rate: 1 $FARM = 100 GOLD
-  private readonly GOLD_PER_FARM = 100;
-
-  // ERC-20 Transfer event ABI
   private readonly ERC20_ABI = [
     'event Transfer(address indexed from, address indexed to, uint256 value)',
     'function decimals() view returns (uint8)',
   ];
 
-  getDepositInfo() {
-    const treasuryAddress = this.config.get<string>('web3.depositTreasuryAddress')
-      || (this.adminWallet?.address ?? '');
+  async getDepositInfo() {
+    const treasuryAddress =
+      this.config.get<string>('web3.depositTreasuryAddress') ||
+      (this.adminWallet?.address ?? '');
     const farmTokenAddress = this.config.get<string>('web3.farmTokenAddress') ?? '';
     const chainId = this.config.get<number>('web3.chainId') ?? 97;
+    const rates = await this.getDynamicRates();
 
     return {
       treasuryAddress,
       farmTokenAddress,
-      goldPerFarm: this.GOLD_PER_FARM,
+      goldPerFarm: rates.depositRate,
+      baseRate: rates.baseRate,
+      alpha: rates.alpha,
+      depositFee: rates.depositFee,
       chainId,
       instructions: [
         `Send $FARM token to the treasury address: ${treasuryAddress}`,
         `Minimum deposit: 1 $FARM`,
-        `Rate: 1 $FARM = ${this.GOLD_PER_FARM} GOLD (fixed rate, instant credit)`,
+        `Rate: 1 $FARM = ${rates.depositRate} GOLD (Dynamic Peg, live market rate, 0% fee)`,
         `After sending, submit your transaction hash via POST /web3/deposit-verify`,
       ],
-      note: 'Deposit is one-way (Farm→Gold). To convert Gold back to $FARM, use the Claim feature.',
+      note: 'Deposit converts $FARM into in-game GOLD. To cash out back to $FARM, use Convert / Claim.',
     };
   }
 
@@ -937,6 +1481,7 @@ export class Web3Service {
     goldBalance: number;
     txHash: string;
     farmAmount: number;
+    depositRate: number;
   }> {
     if (!this.provider) throw new BadRequestException('Blockchain connection not available');
 
@@ -948,36 +1493,21 @@ export class Web3Service {
     )?.toLowerCase();
     if (!treasuryAddress) throw new BadRequestException('Treasury address not configured');
 
-    // Fetch user and verify wallet linked
     const user = await this.dataSource.manager.findOne(User, { where: { id: userId } });
     if (!user?.walletAddress) throw new BadRequestException('Link a BSC wallet before depositing');
 
-    // Prevent replay — check processed_onchain_txs (same table used by marketplace)
     const already = await this.dataSource.manager.query(
       `SELECT 1 FROM processed_onchain_txs WHERE tx_hash = $1`,
       [txHash.toLowerCase()],
     );
     if (already.length > 0) throw new BadRequestException('Transaction already processed');
 
-    // Both the receipt fetch and queryFilter() are pure chain reads, so a transport
-    // hiccup must degrade to "upstream unavailable" instead of crashing the request.
-    // Previously only getTransactionReceipt was guarded: a queryFilter() failure escaped
-    // this method entirely and surfaced as an unhandled 500 even though the deposit the
-    // player submitted may be perfectly valid and simply need a retry.
     let receipt: ethers.TransactionReceipt | null;
-    let logs: Array<ethers.Log | ethers.EventLog>;
     try {
       receipt = await this.provider.getTransactionReceipt(txHash);
-      if (!receipt) throw new BadRequestException('Transaction not found or not yet confirmed');
+      if (!receipt) throw new BadRequestException('Transaction not found or not yet confirmed on BSC');
       if (receipt.status !== 1) throw new BadRequestException('Transaction reverted on-chain');
-
-      // Parse Transfer events from the FarmToken contract
-      const farmContract = new ethers.Contract(farmTokenAddress, this.ERC20_ABI, this.provider);
-      const transferFilter = farmContract.filters.Transfer(null, treasuryAddress);
-      logs = await farmContract.queryFilter(transferFilter, receipt.blockNumber, receipt.blockNumber);
     } catch (err) {
-      // The BadRequestException above is a verdict about the transaction itself, not a
-      // transport failure — it keeps its 400 semantics.
       if (err instanceof BadRequestException) throw err;
       this.logger.warn(`Deposit verify RPC failed for ${txHash}: ${(err as Error).message}`);
       throw new ServiceUnavailableException(
@@ -985,14 +1515,40 @@ export class Web3Service {
       );
     }
 
-    // Find Transfer log matching this txHash and sender = user's wallet
-    const senderLower = user.walletAddress.toLowerCase();
-    const matchingLog = logs.find(
-      (log) =>
-        log.transactionHash.toLowerCase() === txHash.toLowerCase() &&
-        'args' in log &&
-        (log as ethers.EventLog).args.from.toLowerCase() === senderLower,
-    );
+    const farmContract = new ethers.Contract(farmTokenAddress, this.ERC20_ABI, this.provider);
+    const senderLower = user.walletAddress.trim().toLowerCase();
+    const treasuryLower = treasuryAddress.trim().toLowerCase();
+    const validFarmTokens = new Set([
+      farmTokenAddress.toLowerCase(),
+      '0x7eadd0273eb170b4ba28050f675c4878beb75ae3',
+      '0xb10067a034078e3fc8335fb003eef7334c44952f',
+    ].filter(Boolean));
+
+    let matchingLog: { from: string; to: string; value: bigint } | null = null;
+    for (const log of receipt.logs) {
+      if (!validFarmTokens.has(log.address.toLowerCase())) continue;
+      try {
+        const parsed = farmContract.interface.parseLog({
+          topics: [...log.topics],
+          data: log.data,
+        });
+        if (
+          parsed &&
+          parsed.name === 'Transfer' &&
+          parsed.args[0]?.toLowerCase() === senderLower &&
+          parsed.args[1]?.toLowerCase() === treasuryLower
+        ) {
+          matchingLog = {
+            from: parsed.args[0],
+            to: parsed.args[1],
+            value: parsed.args[2] as bigint,
+          };
+          break;
+        }
+      } catch {
+        // Skip non-matching logs
+      }
+    }
 
     if (!matchingLog) {
       throw new BadRequestException(
@@ -1000,18 +1556,20 @@ export class Web3Service {
       );
     }
 
-    const farmAmountWei = (matchingLog as ethers.EventLog).args.value as bigint;
+    const farmAmountWei = matchingLog.value;
     const farmAmount = Number(ethers.formatEther(farmAmountWei));
     if (farmAmount < 1) throw new BadRequestException('Minimum deposit is 1 $FARM');
 
-    const goldToCredit = Math.floor(farmAmount * this.GOLD_PER_FARM);
+    const rates = await this.getDynamicRates();
+    const goldToCredit = Number((farmAmount * rates.depositRate).toFixed(2));
+    if (goldToCredit <= 0) throw new BadRequestException('Deposit amount too small to credit GOLD');
 
-    // Atomic: mark tx processed + credit GOLD
+    // Atomic: mark tx processed + credit GOLD + record gold transaction
     await this.dataSource.transaction(async (manager) => {
       const result: any = await manager.query(
-        `INSERT INTO processed_onchain_txs (tx_hash, event_type)
-         VALUES ($1, 'FarmDeposit')
-         ON CONFLICT (tx_hash) DO NOTHING`,
+        `INSERT INTO processed_onchain_txs (tx_hash, log_index, event_type)
+         VALUES ($1, 0, 'FarmDeposit')
+         ON CONFLICT (tx_hash, log_index) DO NOTHING`,
         [txHash.toLowerCase()],
       );
       if (result.rowCount === 0) throw new BadRequestException('Transaction already processed');
@@ -1020,6 +1578,14 @@ export class Web3Service {
         `UPDATE users SET gold_balance = gold_balance + $1 WHERE id = $2`,
         [goldToCredit, userId],
       );
+
+      await this.economyOracle.record(manager, {
+        userId,
+        amount: goldToCredit,
+        type: 'MINT',
+        category: 'FARM_DEPOSIT',
+        description: `Deposit ${farmAmount.toFixed(4)} FARM for ${goldToCredit} GOLD (rate: ${rates.depositRate.toFixed(2)} G/FARM)`,
+      });
     });
 
     const updated = await this.dataSource.manager.findOne(User, { where: { id: userId } });
@@ -1030,6 +1596,7 @@ export class Web3Service {
       goldBalance: Number(updated?.goldBalance ?? 0),
       txHash,
       farmAmount,
+      depositRate: rates.depositRate,
     };
   }
 
@@ -1063,5 +1630,221 @@ export class Web3Service {
         );
       }
     }
+  }
+
+  // ── Dual-Layer Protection: Tiered Quota & Global Drip-Feed Engine ──────────
+
+  getUserCashoutTier(user: Partial<User>): UserCashoutTier {
+    if (!user.walletAddress || (user.trustScore ?? 0) < 30) {
+      return UserCashoutTier.TIER_0;
+    }
+    const level = user.level ?? 1;
+    const trustScore = user.trustScore ?? 50;
+
+    if (level >= 10 || trustScore >= 80) {
+      return UserCashoutTier.TIER_3;
+    }
+    if (level >= 5 || trustScore >= 60) {
+      return UserCashoutTier.TIER_2;
+    }
+    return UserCashoutTier.TIER_1;
+  }
+
+  async getCashoutQuota(user: User): Promise<CashoutQuotaResponse> {
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    const poolInfo = await this.economyOracle.getDailyCashoutPool(todayUtc);
+
+    const tier = this.getUserCashoutTier(user);
+    const tierPct = CASHOUT_TIER_PERCENTAGES[tier];
+    const userDailyLimit = Number((poolInfo.globalDailyPoolFarm * tierPct).toFixed(2));
+
+    const [globalSpentRaw, userSpentRaw] = await Promise.all([
+      this.redis.get(`cashout:global:${todayUtc}`),
+      this.redis.get(`cashout:user:${user.id}:${todayUtc}`),
+    ]);
+
+    const globalSpentToday = globalSpentRaw ? Number(globalSpentRaw) : 0;
+    const userSpentToday = userSpentRaw ? Number(userSpentRaw) : 0;
+
+    const globalRemaining = Math.max(0, Number((poolInfo.globalDailyPoolFarm - globalSpentToday).toFixed(2)));
+    const userRemaining = Math.max(0, Number((userDailyLimit - userSpentToday).toFixed(2)));
+
+    let canWithdraw = true;
+    let reason: string | undefined;
+
+    if (tier === UserCashoutTier.TIER_0) {
+      canWithdraw = false;
+      reason = !user.walletAddress
+        ? 'No BSC wallet linked. Link your wallet to unlock cashouts.'
+        : `Trust score too low (${user.trustScore}/30). Play actively to reach Tier 1.`;
+    } else if (globalRemaining <= 0) {
+      canWithdraw = false;
+      reason = 'Global daily reward pool is exhausted for today. Resets at 00:00 UTC.';
+    } else if (userRemaining <= 0) {
+      canWithdraw = false;
+      reason = `You have reached your Tier ${tier} daily cashout limit (${userDailyLimit} FARM). Resets at 00:00 UTC.`;
+    }
+
+    return {
+      date: todayUtc,
+      tier,
+      tierName: CASHOUT_TIER_NAMES[tier],
+      tierPercentage: tierPct,
+      userDailyLimit,
+      userSpentToday: Number(userSpentToday.toFixed(2)),
+      userRemaining,
+      globalDailyPool: poolInfo.globalDailyPoolFarm,
+      globalSpentToday: Number(globalSpentToday.toFixed(2)),
+      globalRemaining,
+      releaseRate: poolInfo.releaseRate,
+      priceGrowth24h: poolInfo.priceGrowth24h,
+      totalCirculatingGold: poolInfo.totalCirculatingGold,
+      goldPerFarmWithdraw: poolInfo.goldPerFarmWithdraw,
+      resetAtUtc: '00:00 UTC',
+      canWithdraw,
+      reason,
+    };
+  }
+
+  // ── BNB Tax Revenue Engine & Premium Services ─────────────────────────────
+
+  getBnbServicesConfig() {
+    const treasuryVault =
+      this.config.get<string>('web3.treasuryContractAddress') ||
+      this.config.get<string>('TREASURY_CONTRACT_ADDRESS') ||
+      '0xe59FfB05EdF59464e8803E81A4d790d828915006';
+    const barnServicesAddress =
+      this.config.get<string>('web3.barnServicesAddress') ||
+      this.config.get<string>('BARN_SERVICES_ADDRESS') ||
+      '0x1D9faFb4f9125dD16d846bF1344954ddd304F14F';
+    const gachaContractAddress =
+      this.config.get<string>('web3.gachaContractAddress') ||
+      this.config.get<string>('GACHA_CONTRACT_ADDRESS') ||
+      '0x5f0c3c5A4745c5EffAd7328AD93972f6474B4118';
+    const marketContractAddress =
+      this.config.get<string>('web3.marketContractAddress') ||
+      this.config.get<string>('MARKET_CONTRACT_ADDRESS') ||
+      '0xe2326Fa33b9293488FDCaA3F34Be2745a2f49e11';
+
+    return {
+      treasuryVault,
+      barnServicesAddress,
+      gachaContractAddress,
+      marketContractAddress,
+      tokenizeDog: {
+        singleFeeBnb: 0.002,
+        bulk3xFeeBnb: 0.005,
+        farmCostSingle: 15,
+        farmCost3x: 40,
+      },
+      marketplace: {
+        bnbTradingFeeBps: 300, // 3%
+        feeDestination: treasuryVault,
+      },
+      subscriptions: [
+        {
+          subType: 1,
+          name: '7-Day Barn Butler & Crop Insurance',
+          priceBnb: 0.005,
+          durationDays: 7,
+          features: [
+            'Auto-harvest mature crops every 30 minutes',
+            '80% Crop theft compensation insurance',
+          ],
+        },
+        {
+          subType: 2,
+          name: '30-Day Barn Butler & Crop Insurance',
+          priceBnb: 0.015,
+          durationDays: 30,
+          features: [
+            'Auto-harvest mature crops every 30 minutes',
+            '80% Crop theft compensation insurance',
+            'Priority Auto Buyback & Drip-feed Perks',
+          ],
+        },
+      ],
+    };
+  }
+
+  async verifySubscriptionTx(user: User, txHash: string) {
+    if (!user.walletAddress) throw new BadRequestException('No wallet linked');
+    if (!txHash || !txHash.startsWith('0x')) throw new BadRequestException('Invalid txHash');
+
+    const provider = this.getProvider();
+    if (!provider) throw new ServiceUnavailableException('RPC provider offline');
+
+    const receipt = await provider.getTransactionReceipt(txHash);
+    if (!receipt) throw new BadRequestException('Transaction not yet confirmed on BSC');
+    if (receipt.status !== 1) throw new BadRequestException('Transaction reverted on-chain');
+
+    const barnServicesAddr =
+      this.config.get<string>('web3.barnServicesAddress') ||
+      this.config.get<string>('BARN_SERVICES_ADDRESS') ||
+      '0x1D9faFb4f9125dD16d846bF1344954ddd304F14F';
+
+    const iface = new ethers.Interface([
+      'event SubscriptionPurchased(address indexed user, uint8 indexed subType, uint256 expiry, uint256 bnbPaid)',
+    ]);
+
+    let parsedLog: any = null;
+    let logIndex = 0;
+    for (let i = 0; i < receipt.logs.length; i++) {
+      const log = receipt.logs[i];
+      if (log.address.toLowerCase() === barnServicesAddr.toLowerCase()) {
+        try {
+          const parsed = iface.parseLog({ topics: [...log.topics], data: log.data });
+          if (parsed && parsed.name === 'SubscriptionPurchased') {
+            parsedLog = parsed;
+            logIndex = i;
+            break;
+          }
+        } catch {
+          // continue
+        }
+      }
+    }
+
+    if (!parsedLog) {
+      throw new BadRequestException('No SubscriptionPurchased event found for BarnServices in this transaction');
+    }
+
+    const eventUser = (parsedLog.args[0] as string).toLowerCase();
+    if (eventUser !== user.walletAddress.toLowerCase()) {
+      throw new BadRequestException('Transaction sender does not match user wallet');
+    }
+
+    const subType = Number(parsedLog.args[1]); // 1 or 2
+    const expiryTimestamp = Number(parsedLog.args[2]);
+    const bnbPaid = ethers.formatEther(parsedLog.args[3]);
+
+    await this.dataSource.transaction(async (manager) => {
+      const result: any = await manager.query(
+        `INSERT INTO processed_onchain_txs (tx_hash, log_index, event_type)
+         VALUES ($1, $2, 'SubscriptionPurchased')
+         ON CONFLICT (tx_hash, log_index) DO NOTHING`,
+        [txHash.toLowerCase(), logIndex],
+      );
+      if (result.rowCount === 0) throw new BadRequestException('Transaction already processed');
+
+      const butlerType = subType === 2 ? 'butler_30d' : 'butler_7d';
+      const insType = subType === 2 ? 'crop_insurance_30d' : 'crop_insurance_7d';
+
+      await this.guildService.purchaseSubscriptionTx(manager, user.id, butlerType);
+      await this.guildService.purchaseSubscriptionTx(manager, user.id, insType);
+    });
+
+    // Immediate Buyback check if Vault reached 2.0 BNB
+    this.treasuryMonitor.checkAndExecuteBuyBack().catch((err) => {
+      this.logger.warn(`Buyback trigger post-subscription check failed: ${err.message}`);
+    });
+
+    return {
+      success: true,
+      subType,
+      expiresAt: new Date(expiryTimestamp * 1000),
+      bnbPaid,
+      message: `Activated ${subType === 2 ? '30-Day' : '7-Day'} Barn Butler & Crop Insurance!`,
+    };
   }
 }
