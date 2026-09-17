@@ -1,12 +1,12 @@
-"""Test độc lập cho run_backtest_qa.py — chạy offline, không cần DEEPSEEK_API_KEY.
+"""Independent test for run_backtest_qa.py — runs offline, does not require DEEPSEEK_API_KEY.
 
-Script gốc thực thi mọi thứ ở module level, nên mỗi test sẽ:
-  1. chdir vào tmp_path (không ghi đè game_qa.md thật của repo),
+Original script executes everything at module level, so each test will:
+  1. chdir to tmp_path (avoids overwriting real game_qa.md in repo),
   2. set env DEEPSEEK_API_KEY / TARGET_DIR,
-  3. mock dotenv.load_dotenv + requests.post TRƯỚC khi import,
-  4. import lại module (đã xoá khỏi sys.modules).
+  3. mock dotenv.load_dotenv + requests.post BEFORE importing,
+  4. re-import module (after deleting from sys.modules).
 
-Chạy: pytest -q test_run_backtest_qa.py
+Run: pytest -q test_run_backtest_qa.py
 """
 import importlib
 import json
@@ -22,7 +22,7 @@ REPORT_FILE = "game_qa.md"
 
 
 class FakeResponse:
-    """Giả lập requests.Response với đúng các thuộc tính mà script dùng."""
+    """Mock requests.Response with exact attributes used by the script."""
 
     def __init__(self, status_code, body, text=None):
         self.status_code = status_code
@@ -35,10 +35,10 @@ class FakeResponse:
 
 @pytest.fixture
 def run_script(monkeypatch, tmp_path):
-    """Trả về hàm chạy script trong môi trường đã cô lập."""
+    """Returns a function to execute the script in an isolated environment."""
     sys.path.insert(0, SCRIPT_DIR)
     monkeypatch.chdir(tmp_path)
-    # Không đọc .env thật -> test tất định và không cần secret
+    # Do not read real .env -> deterministic test without requiring secrets
     monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: None)
 
     def _run(env=None, post_impl=None):
@@ -51,8 +51,10 @@ def run_script(monkeypatch, tmp_path):
 
         monkeypatch.delitem(sys.modules, "run_backtest_qa", raising=False)
         try:
-            importlib.import_module("run_backtest_qa")
-        except SystemExit as exc:  # script dùng exit() cho các nhánh lỗi
+            mod = importlib.import_module("run_backtest_qa")
+            if hasattr(mod, "main"):
+                mod.main()
+        except SystemExit as exc:  # script uses exit() on error branches
             return exc.code
         return None
 
@@ -63,7 +65,7 @@ def run_script(monkeypatch, tmp_path):
 
 
 def make_project(base):
-    """Project giả: có file hợp lệ, file sai đuôi và thư mục rác."""
+    """Mock project: has valid files, invalid extension files, and junk directories."""
     project = base / "proj"
 
     (project / "src").mkdir(parents=True)
@@ -101,12 +103,12 @@ def test_success_writes_report_to_game_qa_md(run_script, tmp_path, capsys):
 
     assert code is None
     out = capsys.readouterr().out
-    assert "Đang phân tích" in out
+    assert "Analyzing and scanning" in out
     assert "game_qa.md" in out
 
     report = tmp_path / REPORT_FILE
     assert report.read_text(encoding="utf-8") == "# QA REPORT"
-    # Báo cáo phải nằm đúng game_qa.md trong CWD, không phải tên cũ nào khác
+    # Report must be written to game_qa.md in CWD, not an old name
     assert [p.name for p in tmp_path.glob("*.md")] == [REPORT_FILE]
 
     assert captured["url"] == "https://api.deepseek.com/v1/chat/completions"
@@ -116,7 +118,7 @@ def test_success_writes_report_to_game_qa_md(run_script, tmp_path, capsys):
 
     payload = captured["payload"]
     assert payload["model"] == "deepseek-reasoner"
-    assert "temperature" not in payload  # deepseek-reasoner không hỗ trợ temperature
+    assert "temperature" not in payload  # deepseek-reasoner does not support temperature
     assert payload["stream"] is False
     assert payload["messages"][0]["role"] == "system"
     assert "Bandit Buddy" in payload["messages"][0]["content"]
@@ -124,8 +126,8 @@ def test_success_writes_report_to_game_qa_md(run_script, tmp_path, capsys):
     user_content = payload["messages"][1]["content"]
     assert "game.ts" in user_content
     assert "FarmToken.sol" in user_content
-    assert "junk" not in user_content          # node_modules phải bị bỏ qua
-    assert "notes.txt" not in user_content     # sai đuôi file phải bị bỏ qua
+    assert "junk" not in user_content          # node_modules must be ignored
+    assert "notes.txt" not in user_content     # invalid file extension must be ignored
 
 
 def test_missing_api_key_aborts_without_writing_report(run_script, tmp_path, capsys):
@@ -133,7 +135,7 @@ def test_missing_api_key_aborts_without_writing_report(run_script, tmp_path, cap
 
     run_script(env={"TARGET_DIR": str(project)})
 
-    assert "LỖI BẢO MẬT" in capsys.readouterr().out
+    assert "SECURITY ERROR" in capsys.readouterr().out
     assert not (tmp_path / REPORT_FILE).exists()
 
 
@@ -143,7 +145,7 @@ def test_empty_target_dir_aborts(run_script, tmp_path, capsys):
 
     run_script(env={"DEEPSEEK_API_KEY": "k", "TARGET_DIR": str(empty)})
 
-    assert "Không tìm thấy mã nguồn" in capsys.readouterr().out
+    assert "No valid source code" in capsys.readouterr().out
     assert not (tmp_path / REPORT_FILE).exists()
 
 
@@ -167,7 +169,7 @@ def test_unexpected_json_shape_is_reported(run_script, tmp_path, capsys):
         post_impl=lambda *a, **kw: FakeResponse(200, {"unexpected": True}),
     )
 
-    assert "Lỗi cấu trúc JSON" in capsys.readouterr().out
+    assert "JSON structure error" in capsys.readouterr().out
     assert not (tmp_path / REPORT_FILE).exists()
 
 
@@ -179,22 +181,22 @@ def test_network_exception_is_caught(run_script, tmp_path, capsys):
 
     run_script(env={"DEEPSEEK_API_KEY": "k", "TARGET_DIR": str(project)}, post_impl=boom)
 
-    assert "Lỗi xử lý dữ liệu" in capsys.readouterr().out
+    assert "Data processing error" in capsys.readouterr().out
     assert not (tmp_path / REPORT_FILE).exists()
 
 
 def test_existing_report_is_overwritten(run_script, tmp_path):
     project = make_project(tmp_path)
-    (tmp_path / REPORT_FILE).write_text("BÁO CÁO CŨ", encoding="utf-8")
+    (tmp_path / REPORT_FILE).write_text("OLD REPORT", encoding="utf-8")
 
     run_script(
         env={"DEEPSEEK_API_KEY": "k", "TARGET_DIR": str(project)},
         post_impl=lambda *a, **kw: FakeResponse(
-            200, {"choices": [{"message": {"content": "BÁO CÁO MỚI"}}]}
+            200, {"choices": [{"message": {"content": "NEW REPORT"}}]}
         ),
     )
 
-    assert (tmp_path / REPORT_FILE).read_text(encoding="utf-8") == "BÁO CÁO MỚI"
+    assert (tmp_path / REPORT_FILE).read_text(encoding="utf-8") == "NEW REPORT"
 
 
 def test_report_is_written_to_cwd_not_target_dir(run_script, tmp_path):
@@ -207,7 +209,9 @@ def test_report_is_written_to_cwd_not_target_dir(run_script, tmp_path):
         ),
     )
 
-    # Script luôn ghi vào game_qa.md của CWD, không rơi vào TARGET_DIR
+    # Script always writes to game_qa.md in CWD, not in TARGET_DIR
+    assert (tmp_path / REPORT_FILE).is_file()
+    assert not (project / REPORT_FILE).exists()
     assert (tmp_path / REPORT_FILE).is_file()
     assert not (project / REPORT_FILE).exists()
 
@@ -250,3 +254,16 @@ def test_chat_model_keeps_temperature(run_script, tmp_path):
 
     assert captured["payload"]["model"] == "deepseek-chat"
     assert captured["payload"]["temperature"] == 0.3
+
+
+def test_scan_codebase_prioritizes_contracts_and_backend(tmp_path):
+    import run_backtest_qa
+
+    project = make_project(tmp_path)
+    summary = run_backtest_qa.scan_codebase(str(project))
+
+    assert "FarmToken.sol" in summary
+    assert "game.ts" in summary
+    assert "junk.js" not in summary
+    assert "notes.txt" not in summary
+

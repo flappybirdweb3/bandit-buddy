@@ -91,12 +91,13 @@ describe('action DTOs — global ValidationPipe contract', () => {
         .rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('documents a gap: amount carries no numeric validation', async () => {
-      // RepairDto.amount is decorated only with @IsNotEmpty(), so a non-numeric
-      // string survives the global pipe and reaches ActionService.repairBuilding().
-      // Adding @Type(() => Number) + @IsInt() + @IsIn([10..100]) would close this.
-      const out = await validate(RepairDto, { target: 'fence', amount: 'not-a-number' });
-      expect(out.amount).toBe('not-a-number');
+    it('rejects non-numeric and out-of-range amounts', async () => {
+      await expect(validate(RepairDto, { target: 'fence', amount: 'not-a-number' }))
+        .rejects.toBeInstanceOf(BadRequestException);
+      await expect(validate(RepairDto, { target: 'fence', amount: 5 }))
+        .rejects.toBeInstanceOf(BadRequestException);
+      await expect(validate(RepairDto, { target: 'fence', amount: 150 }))
+        .rejects.toBeInstanceOf(BadRequestException);
     });
   });
 
