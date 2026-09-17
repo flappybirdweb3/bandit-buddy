@@ -8,6 +8,7 @@ services:
       POSTGRES_DB: barnbuddy
       POSTGRES_USER: barnbuddy
       POSTGRES_PASSWORD: barnbuddy_secret
+    command: postgres -c max_connections=200 -c shared_buffers=256MB
     ports:
       - '5434:5432'
     volumes:
