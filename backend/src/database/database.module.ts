@@ -20,6 +20,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
         synchronize: false,
         logging: config.get('nodeEnv') === 'development',
         ssl: config.get('database.ssl') ? { rejectUnauthorized: false } : false,
+        extra: { max: 30, min: 5 },
       }),
     }),
   ],
