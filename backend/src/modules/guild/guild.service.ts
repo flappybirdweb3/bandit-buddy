@@ -881,8 +881,9 @@ export class GuildService {
             relations: ['preferredSeed'],
           });
 
-          const defaultSeed = await this.seedRepo.findOne({
+          const [defaultSeed] = await this.seedRepo.find({
             order: { levelRequired: 'ASC', costGold: 'ASC' },
+            take: 1,
           });
 
           const user = await this.userRepo.findOne({ where: { id: userId }, select: ['id', 'goldBalance', 'level'] });
