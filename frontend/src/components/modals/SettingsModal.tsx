@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
-  X, Wallet, Shield, Copy, Check, Volume2, VolumeX, Music, Music2,
+  X, Shield, Copy, Check, Volume2, VolumeX, Music, Music2,
   Smartphone, Bell, BellOff,
   Coins, Flame, LayoutGrid, Swords, Gift, ExternalLink,
   ChevronDown, ChevronUp, Info, Trophy, ChevronRight, Maximize2, RefreshCw, Wheat, Sprout,
@@ -8,13 +8,11 @@ import {
 } from 'lucide-react';
 import { AchievementModal } from '@/components/modals/AchievementModal';
 import { useFullscreen } from '@/hooks/useFullscreen';
-import { privateKeyToAccount } from 'viem/accounts';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { useGame } from '@/providers/GameProvider';
 import { api } from '@/api/client';
 import { eventBus } from '@/game/EventBus';
 import { useCashoutQuota } from '@/hooks/useCashoutQuota';
-import { getStoredWalletPk } from '@/hooks/useAutoWallet';
 import { bgmManager, soundManager } from '@/sounds/SoundManager';
 import WebApp from '@twa-dev/sdk';
 import type { NftBreed, CashoutQuota, UserProfile } from '@/types/game.types';
@@ -391,9 +389,6 @@ export function SettingsModal({ onClose }: Props) {
   const [showAchievements,  setShowAchievements]  = useState(false);
 
   const { isFullscreen, supported: fsSupported, toggle: toggleFullscreen, requestFullscreen } = useFullscreen();
-  const storedPk     = getStoredWalletPk();
-  const walletAddress = profile?.walletAddress ?? (storedPk ? privateKeyToAccount(storedPk).address : null);
-
   const { data: referral } = useQuery({
     queryKey: ['referral'],
     queryFn: api.getReferral,
@@ -550,53 +545,6 @@ export function SettingsModal({ onClose }: Props) {
               />
             </Section>
           )}
-
-          {/* ── Wallet ── */}
-          <Section title="BSC Wallet">
-            {walletAddress ? (
-              <>
-                <Row
-                  icon={<Wallet size={15} className="text-green-400" />}
-                  label="Address"
-                  sublabel="Auto-generated non-custodial wallet"
-                  right={
-                    <div className="flex items-center gap-1.5">
-                      <a
-                        href={`https://testnet.bscscan.com/address/${walletAddress}`}
-                        target="_blank" rel="noreferrer"
-                        className="glass rounded-xl p-1.5 text-white/40 active:scale-90"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <ExternalLink size={11} />
-                      </a>
-                      <CopyButton text={walletAddress} short={`${walletAddress.slice(0,6)}…${walletAddress.slice(-4)}`} />
-                    </div>
-                  }
-                />
-                <button
-                  onClick={() => {
-                    soundManager.play('click');
-                    onClose();
-                    eventBus.emit('show-wallet');
-                  }}
-                  className="w-full flex items-center justify-between px-4 py-2.5 border-t border-white/5 hover:bg-white/5 active:bg-white/10 transition-colors text-left"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-7 h-7 rounded-lg bg-amber-400/20 text-amber-300 flex items-center justify-center">
-                      <Wallet size={14} />
-                    </div>
-                    <div>
-                      <p className="text-white text-xs font-bold">Open Web3 Keyless Wallet</p>
-                      <p className="text-white/40 text-[10px]">Manage assets, send, receive & cloud backups</p>
-                    </div>
-                  </div>
-                  <ChevronRight size={14} className="text-white/30" />
-                </button>
-              </>
-            ) : (
-              <div className="px-4 py-3 text-white/30 text-sm text-center">Wallet loading…</div>
-            )}
-          </Section>
 
           {/* ── Smart Contracts & Network ── */}
           <Section title="Contracts & Network">

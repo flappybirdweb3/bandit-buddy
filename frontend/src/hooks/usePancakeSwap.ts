@@ -562,7 +562,7 @@ export function usePancakeSwap() {
         return;
       }
     } else {
-      const msg = 'No wallet found. Please set up your wallet in Settings first.';
+      const msg = 'Wallet key not found on this device. Tap the wallet icon (top-right) to import your private key or create a new wallet.';
       setError(msg);
       setStep('error');
       setReceipt({

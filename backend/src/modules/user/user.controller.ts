@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, UseGuards, Query } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, UseGuards, Query } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { UserService } from './user.service';
 import { Web3Service } from '../web3/web3.service';
@@ -79,6 +79,12 @@ export class UserController {
   ) {
     const cat = (['thieves', 'rich', 'streak', 'farmer'].includes(category ?? '') ? category : 'thieves') as 'thieves' | 'rich' | 'streak' | 'farmer';
     return this.userService.getLeaderboard(user.id, limit ? Math.min(parseInt(limit, 10), 100) : 50, cat);
+  }
+
+  @Delete('wallet')
+  async unlinkWallet(@CurrentUser() user: User) {
+    await this.userService.unlinkWalletAddress(user.id);
+    return { message: 'Wallet unlinked' };
   }
 
   @Patch('wallet')

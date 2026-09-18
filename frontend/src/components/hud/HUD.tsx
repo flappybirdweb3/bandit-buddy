@@ -321,7 +321,7 @@ export function HUD({ isDesktop, desktopFullscreen, onToggleDesktopFullscreen }:
           </button>
         </div>
 
-        {/* GOLD + $FARM claim indicator */}
+        {/* GOLD + $FARM claim + Wallet icon */}
         <div className="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
           <button
             onClick={() => {
@@ -356,10 +356,8 @@ export function HUD({ isDesktop, desktopFullscreen, onToggleDesktopFullscreen }:
               <span className="text-violet-300 text-[10px] font-bold leading-none">Claim</span>
             </button>
           )}
+          <WalletHUD onOpenDashboard={() => { setWalletInitialTab('tokens'); setShowWallet(true); }} />
         </div>
-
-        {/* Decentralized Keyless Wallet HUD */}
-        <WalletHUD onOpenDashboard={() => { setWalletInitialTab('tokens'); setShowWallet(true); }} />
 
         {/* Spacer */}
         <div className="flex-1 min-w-0" />

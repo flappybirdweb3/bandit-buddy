@@ -109,7 +109,7 @@ export function App() {
   const [isDesktop] = useState(detectDesktop);
   const [desktopFullscreen, setDesktopFullscreen] = useState(false);
 
-  const { showSetup, dismissSetup } = useAutoWallet(profile);
+  const { showSetup, dismissSetup, walletLocked } = useAutoWallet(profile);
   const { requestFullscreen, exitFullscreen, supported: fsSupported } = useFullscreen();
   useOfflineDetection();
 
@@ -117,6 +117,19 @@ export function App() {
     dismissSetup();
     qc.invalidateQueries({ queryKey: ['profile'] });
   };
+
+  useEffect(() => {
+    if (!walletLocked) return;
+    const toastKey = 'bb_wallet_locked_toast';
+    if (sessionStorage.getItem(toastKey)) return;
+    sessionStorage.setItem(toastKey, '1');
+    setTimeout(() => {
+      eventBus.emit('show-toast', {
+        message: '🔑 Wallet key not on this device. Tap the wallet icon to restore or reset.',
+        type: 'info',
+      });
+    }, 2000);
+  }, [walletLocked]);
 
   // On desktop: expand() fills the Telegram panel (fine), but skip requestFullscreen()
   // which would take over the entire OS screen and break the centered layout.

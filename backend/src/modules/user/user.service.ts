@@ -214,6 +214,10 @@ export class UserService {
     await this.userRepo.update(userId, { walletAddress: canonical });
   }
 
+  async unlinkWalletAddress(userId: string): Promise<void> {
+    await this.userRepo.update(userId, { walletAddress: null as any });
+  }
+
   async findById(id: string): Promise<User> {
     const user = await this.userRepo.findOne({ where: { id } });
     if (!user) throw new NotFoundException('User not found');

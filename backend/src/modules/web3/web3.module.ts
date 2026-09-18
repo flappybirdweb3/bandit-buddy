@@ -7,6 +7,7 @@ import { DexVolumeService } from './dex-volume.service';
 import { EconomyOracleService } from './economy-oracle.service';
 import { FusionOracleService } from './fusion-oracle.service';
 import { TreasuryMonitorService } from './treasury-monitor.service';
+import { EcosystemReleaseService } from './ecosystem-release.service';
 import { Web3AdminController } from './web3-admin.controller';
 import { User } from '../user/entities/user.entity';
 import { NftGuardDog } from '../farm/entities/nft-guard-dog.entity';
@@ -30,6 +31,7 @@ import { CommonModule } from '../../common/common.module';
     EconomyOracleService,
     FusionOracleService,
     TreasuryMonitorService,
+    EcosystemReleaseService,
   ],
   exports: [
     Web3Service,
@@ -38,6 +40,7 @@ import { CommonModule } from '../../common/common.module';
     EconomyOracleService,
     FusionOracleService,
     TreasuryMonitorService,
+    EcosystemReleaseService,
   ],
 })
 export class Web3Module {}

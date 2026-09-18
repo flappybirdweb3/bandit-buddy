@@ -112,6 +112,10 @@ const STORAGE_CURRENCY_KEY = 'bb_wallet_fiat_currency';
 const STORAGE_BACKUP_KEY = 'bb_wallet_backup_status';
 const STORAGE_BACKUP_DATE_KEY = 'bb_wallet_backup_date';
 const STORAGE_TX_HISTORY_KEY = 'bb_wallet_tx_history';
+const CLOUD_PK_KEY = 'bb_wk'; // Telegram CloudStorage key for private key
+
+export { tgCloudGet, tgCloudAvailable } from '@/hooks/telegramCloud';
+import { tgCloudSet, tgCloudGet, tgCloudAvailable } from '@/hooks/telegramCloud';
 
 export function useMPCWallet() {
   const qc = useQueryClient();
@@ -163,7 +167,7 @@ export function useMPCWallet() {
     return `${info.symbol}${converted.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }, [currency]);
 
-  // Backup states
+  // Backup states — initialized from localStorage, then verified against CloudStorage on mount
   const [isBackedUp, setIsBackedUp] = useState<boolean>(() => {
     return localStorage.getItem(STORAGE_BACKUP_KEY) === '1';
   });
@@ -171,6 +175,27 @@ export function useMPCWallet() {
   const [lastBackupDate, setLastBackupDate] = useState<string | null>(() => {
     return localStorage.getItem(STORAGE_BACKUP_DATE_KEY);
   });
+
+  // On mount: verify a cloud backup actually exists (localStorage flag may have been cleared)
+  useEffect(() => {
+    tgCloudGet(CLOUD_PK_KEY).then((cloudPk) => {
+      if (cloudPk) {
+        // Cloud backup exists — sync localStorage flag so badge is correct
+        const today = localStorage.getItem(STORAGE_BACKUP_DATE_KEY) || new Date().toISOString().split('T')[0];
+        localStorage.setItem(STORAGE_BACKUP_KEY, '1');
+        localStorage.setItem(STORAGE_BACKUP_DATE_KEY, today);
+        setIsBackedUp(true);
+        setLastBackupDate(today);
+      } else if (!cloudPk && localStorage.getItem(STORAGE_BACKUP_KEY) === '1') {
+        // localStorage says backed up but cloud has nothing — badge was stale
+        localStorage.removeItem(STORAGE_BACKUP_KEY);
+        localStorage.removeItem(STORAGE_BACKUP_DATE_KEY);
+        setIsBackedUp(false);
+        setLastBackupDate(null);
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Client instances
   const publicClient = useMemo(() => {
@@ -264,19 +289,32 @@ export function useMPCWallet() {
     });
   }, []);
 
-  // Quick Cloud Backup action
+  // Quick Cloud Backup — actually saves pk to Telegram CloudStorage
   const performCloudBackup = useCallback(async () => {
+    if (!pk) throw new Error('No wallet key to back up');
+    await tgCloudSet(CLOUD_PK_KEY, pk);
     const today = new Date().toISOString().split('T')[0];
     localStorage.setItem(STORAGE_BACKUP_KEY, '1');
     localStorage.setItem(STORAGE_BACKUP_DATE_KEY, today);
     setIsBackedUp(true);
     setLastBackupDate(today);
+    try { (WebApp as any)?.HapticFeedback?.notificationOccurred?.('success'); } catch {}
+    return true;
+  }, [pk]);
 
-    // Provide Telegram haptic feedback
+  // Restore key from Telegram CloudStorage → localStorage, returns true if found
+  const restoreFromCloud = useCallback(async (): Promise<boolean> => {
+    const cloudPk = await tgCloudGet(CLOUD_PK_KEY);
+    if (!cloudPk) return false;
     try {
-      (WebApp as any)?.HapticFeedback?.notificationOccurred?.('success');
-    } catch {}
-
+      privateKeyToAccount(cloudPk as `0x${string}`); // validate before storing
+    } catch {
+      return false;
+    }
+    const tid = (WebApp as any)?.initDataUnsafe?.user?.id;
+    const userKey = tid ? `bb_wallet_pk_${tid}` : 'bb_wallet_pk';
+    localStorage.setItem(userKey, cloudPk);
+    localStorage.setItem('bb_wallet_pk', cloudPk);
     return true;
   }, []);
 
@@ -515,7 +553,9 @@ export function useMPCWallet() {
     formatFiat,
     isBackedUp,
     lastBackupDate,
+    cloudStorageAvailable: tgCloudAvailable(),
     performCloudBackup,
+    restoreFromCloud,
     sendBnb,
     sendFarm,
     sendUsdt,

@@ -146,6 +146,8 @@ export const api = {
   getProfile: () => request<UserProfile>('/user/profile'),
   updateWallet: (walletAddress: string) =>
     request('/user/wallet', { method: 'PATCH', body: JSON.stringify({ walletAddress }) }),
+  unlinkWallet: () =>
+    request('/user/wallet', { method: 'DELETE' }),
 
   // Farm
   getMyFarm: () => request<FarmData>('/farm/my'),

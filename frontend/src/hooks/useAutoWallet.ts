@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
+import { tgCloudGet } from '@/hooks/telegramCloud';
 import WebApp from '@twa-dev/sdk';
 import type { UserProfile } from '@/types/game.types';
 
@@ -32,7 +33,7 @@ export function useAutoWallet(profile: UserProfile | undefined) {
       localStorage.getItem(WALLET_SETUP_SHOWN_KEY) === '1';
 
     // Lazy-load viem — keeps it out of the initial bundle
-    import('viem/accounts').then(({ generatePrivateKey, privateKeyToAccount }) => {
+    import('viem/accounts').then(async ({ generatePrivateKey, privateKeyToAccount }) => {
       // If no scoped key yet, check if legacy pk belongs to this profile
       if (!existingPk && legacyPk) {
         try {
@@ -73,7 +74,20 @@ export function useAutoWallet(profile: UserProfile | undefined) {
       }
 
       // ── Case 2: no local key for this user, but account already has a wallet ───────────
+      // Try to restore from Telegram CloudStorage before giving up.
       if (profile.walletAddress) {
+        const cloudPk = await tgCloudGet('bb_wk');
+        if (cloudPk) {
+          try {
+            const cloudAccount = privateKeyToAccount(cloudPk as `0x${string}`);
+            if (cloudAccount.address.toLowerCase() === profile.walletAddress.toLowerCase()) {
+              localStorage.setItem(userKey, cloudPk);
+              localStorage.setItem('bb_wallet_pk', cloudPk);
+              qc.invalidateQueries({ queryKey: ['profile'] });
+              return; // restored — no walletLocked
+            }
+          } catch {}
+        }
         setWalletLocked(true);
         return;
       }
