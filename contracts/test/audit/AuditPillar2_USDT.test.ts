@@ -5,16 +5,21 @@
  *
  * cashoutFarmToUSDT(farmAmount, minUsdtOut):
  *   - Pull FARM from user → WalletGateway
- *   - Swap FARM→WBNB→USDT via MockRouter
+ *   - Swap FARM→WBNB→USDT via MockRouter (swapExactTokensForTokensSupportingFeeOnTransferTokens)
  *   - 1% fee deducted from usdtReceived → treasury USDT balance
  *   - Net USDT → user
  *   - minUsdtOut == 0 must revert (ZeroAmount)
- *   - Balance deltas asserted precisely
+ *   - Balance deltas asserted precisely against on-chain execution
  *
  * convertUSDTtoBNB(minBnbOut): onlyOwner
  *   - Non-owner reverts OwnableUnauthorizedAccount
  *   - Threshold gate: reverts if USDT balance < usdtConversionThreshold ($50)
- *   - On success: USDT cleared, BNB received stays in vault
+ *   - On success: USDT cleared, BNB received stays in vault (via swapExactTokensForETH)
+ *
+ * MockMaliciousRouter now implements all three swap variants:
+ *   swapExactETHForTokensSupportingFeeOnTransferTokens (BNB→FARM buyback)
+ *   swapExactTokensForTokensSupportingFeeOnTransferTokens (FARM→USDT cashout)
+ *   swapExactTokensForETH (USDT→BNB conversion)
  */
 import { expect } from 'chai';
 import { ethers } from 'hardhat';
@@ -23,44 +28,29 @@ import { loadFixture } from '@nomicfoundation/hardhat-network-helpers';
 const E18 = (n: number | string) => ethers.parseEther(String(n));
 const DEAD = '0x000000000000000000000000000000000000dEaD';
 
-// ── Mock Router notes ────────────────────────────────────────────────────────
-// MockMaliciousRouter (contracts/src/mocks) is used for ETH->FARM buyback simulations.
-// For FARM->USDT cashout the router calls swapExactTokensForTokensSupportingFeeOnTransferTokens.
-// Full DEX integration is validated on a BSC mainnet fork; unit tests here cover
-// the fee math, access control, slippage guard, and wiring assertions.
-
 async function deployPillar2Fixture() {
   const [owner, alice, bob, nonOwner] = await ethers.getSigners();
 
-  // FarmToken
   const FarmFactory = await ethers.getContractFactory('FarmToken');
   const farm = await FarmFactory.deploy(owner.address);
   await farm.excludeFromFee(alice.address, true);
   await farm.excludeFromFee(owner.address, true);
 
-  // MockERC20 as USDT (6-decimal in production but we use 18 here for simplicity)
   const MockErc20Factory = await ethers.getContractFactory('MockERC20');
   const usdt = await MockErc20Factory.deploy();
 
-  // MockMaliciousRouter — we customise it to also serve USDT swaps.
-  // The router holds USDT and delivers it on every swap call.
   const RouterFactory = await ethers.getContractFactory('MockMaliciousRouter');
   const router = await RouterFactory.deploy();
 
-  // Pre-fund router with FARM (for buyback tests) and USDT (for cashout tests)
+  // Wire router for BNB→FARM and FARM→USDT paths
   await router.setFarmToken(await farm.getAddress());
+  await router.setUsdtToken(await usdt.getAddress());
   await farm.excludeFromFee(await router.getAddress(), true);
   await farm.transfer(await router.getAddress(), E18('500000'));
-
-  // We also need the router to act as a FARM→USDT router.
-  // MockMaliciousRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens is NOT
-  // defined on it, so we use a workaround: WalletGateway calls through the router
-  // interface. We deploy a dedicated minimal mock that satisfies the interface.
-  // Let's inline a minimal mock by deploying a contract that holds USDT.
+  await usdt.mint(await router.getAddress(), E18('100000'));
 
   const wbnb = '0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd';
 
-  // TreasuryBuyBack (the vault, receives USDT fees)
   const TreasuryFactory = await ethers.getContractFactory('TreasuryBuyBack');
   const treasury = await TreasuryFactory.deploy(
     await farm.getAddress(),
@@ -70,7 +60,6 @@ async function deployPillar2Fixture() {
     owner.address,
   );
 
-  // WalletGateway — uses the same router for FARM→USDT swaps
   const GatewayFactory = await ethers.getContractFactory('WalletGateway');
   const gateway = await GatewayFactory.deploy(
     await treasury.getAddress() as unknown as string,
@@ -81,17 +70,12 @@ async function deployPillar2Fixture() {
     owner.address,
   );
 
-  // Exclude gateway from FARM tax
   await farm.excludeFromFee(await gateway.getAddress(), true);
   await farm.excludeFromFee(await treasury.getAddress(), true);
   await farm.excludeFromFee(DEAD, true);
 
-  // Fund alice with FARM
   await farm.transfer(alice.address, E18('10000'));
   await farm.connect(alice).approve(await gateway.getAddress(), ethers.MaxUint256);
-
-  // Fund the router with USDT so it can "deliver" USDT on swap calls
-  await usdt.mint(await router.getAddress(), E18('100000'));
 
   return { owner, alice, bob, nonOwner, farm, usdt, router, treasury, gateway, wbnb };
 }
@@ -123,32 +107,29 @@ describe('Pillar 2 — USDT Integration', () => {
       ).to.be.revertedWithCustomError(gateway, 'ZeroAmount');
     });
 
-    // Audit: Pillar 2 — 1% fee deducted from usdtReceived → treasury
-    it('deducts 1% fee from USDT received; treasury gets fee, user gets 99%', async () => {
+    // Audit: Pillar 2 — full execution: 1% fee deducted on-chain; treasury and user balances verified
+    it('deducts 1% fee from USDT received; treasury gets fee, user gets 99% (on-chain execution)', async () => {
       const { gateway, alice, usdt, router, treasury } = await loadFixture(deployPillar2Fixture);
 
-      // Router will "return" 100 USDT for any FARM→USDT swap
       const mockUsdtOut = E18('100');
-      await router.setMockFarmOut(mockUsdtOut); // MockMaliciousRouter delivers this via farmToken field
-      // We need the router to deliver USDT specifically.
-      // Since MockMaliciousRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens
-      // is NOT implemented on the mock but the gateway calls it, we need a different approach.
+      await router.setMockUsdtOut(mockUsdtOut);
 
-      // The gateway does: router.swapExactTokensForTokensSupportingFeeOnTransferTokens(...)
-      // MockMaliciousRouter does not have this method — the call will fail.
-      // We verify that a revert occurs (router not compatible with USDT path),
-      // which confirms that a real router must be used in production.
-      // For unit testing the fee math, we test the math directly using the CASHOUT_FEE_BPS constant.
+      const aliceUsdtBefore    = await usdt.balanceOf(alice.address);
+      const treasuryUsdtBefore = await usdt.balanceOf(await treasury.getAddress());
 
-      const CASHOUT_FEE_BPS = 100n; // 1% as per contract
-      const FEE_DENOMINATOR = 10000n;
+      // minUsdtOut = 98 (98% slippage floor on 100 USDT expected)
+      await expect(
+        gateway.connect(alice).cashoutFarmToUSDT(E18('500'), E18('98'))
+      ).to.emit(gateway, 'FarmCashedOut');
 
-      const usdtReceived = E18('100');
-      const fee = (usdtReceived * CASHOUT_FEE_BPS) / FEE_DENOMINATOR;
-      const netUsdt = usdtReceived - fee;
+      const aliceUsdtAfter    = await usdt.balanceOf(alice.address);
+      const treasuryUsdtAfter = await usdt.balanceOf(await treasury.getAddress());
 
-      expect(fee).to.equal(E18('1'), '1% fee should be 1 USDT on 100 USDT received');
-      expect(netUsdt).to.equal(E18('99'), 'user should receive 99 USDT');
+      const expectedFee    = (mockUsdtOut * 100n) / 10_000n; // 1% = 1e18
+      const expectedNetOut = mockUsdtOut - expectedFee;      // 99e18
+
+      expect(aliceUsdtAfter - aliceUsdtBefore).to.equal(expectedNetOut, 'alice receives 99%');
+      expect(treasuryUsdtAfter - treasuryUsdtBefore).to.equal(expectedFee, 'treasury receives 1%');
     });
 
     // Audit: Pillar 2 — CASHOUT_FEE_BPS constant is 100 (1%)
@@ -224,24 +205,33 @@ describe('Pillar 2 — USDT Integration', () => {
       expect(await treasury.usdtConversionThreshold()).to.equal(E18('50'));
     });
 
-    // Audit: Pillar 2 — convertUSDTtoBNB clears USDT balance, BNB stays in vault
-    it('convertUSDTtoBNB clears all USDT from treasury and BNB increases', async () => {
+    // Audit: Pillar 2 — full execution: convertUSDTtoBNB clears USDT and BNB increases on-chain
+    it('convertUSDTtoBNB clears all USDT from treasury and BNB increases (on-chain execution)', async () => {
       const { treasury, usdt, router, owner } = await loadFixture(deployPillar2Fixture);
 
-      // Fund treasury with $60 USDT (above threshold)
-      await usdt.mint(await treasury.getAddress(), E18('60'));
+      const treasuryAddr = await treasury.getAddress();
+      const routerAddr   = await router.getAddress();
 
-      // Router must simulate swapExactTokensForETH sending BNB back.
-      // MockMaliciousRouter doesn't implement swapExactTokensForETH,
-      // so we verify the pre-conditions and contract state expectations only.
-      // The treasury calls forceApprove then swapExactTokensForETH.
-      // Since MockMaliciousRouter lacks that function, the tx would revert.
-      // We test the access control and threshold enforcement paths here.
-      // Full integration with a real DEX is tested on forked BSC mainnet.
+      // Fund treasury with $60 USDT (above $50 threshold)
+      await usdt.mint(treasuryAddr, E18('60'));
 
-      const usdtBalance = await usdt.balanceOf(await treasury.getAddress());
-      expect(usdtBalance).to.equal(E18('60'));
-      expect(usdtBalance).to.be.gte(await treasury.usdtConversionThreshold());
+      // Fund router with BNB it will send back during the swap
+      const mockBnb = ethers.parseEther('0.05');
+      await router.setMockBnbOut(mockBnb);
+      await owner.sendTransaction({ to: routerAddr, value: mockBnb });
+
+      const bnbBefore = await ethers.provider.getBalance(treasuryAddr);
+
+      await expect(
+        treasury.connect(owner).convertUSDTtoBNB(ethers.parseEther('0.04'))
+      ).to.emit(treasury, 'USDTConvertedToBNB');
+
+      // USDT fully drained from treasury
+      expect(await usdt.balanceOf(treasuryAddr)).to.equal(0n, 'treasury USDT cleared');
+      // BNB increased by mockBnbOut
+      expect(await ethers.provider.getBalance(treasuryAddr)).to.equal(bnbBefore + mockBnb, 'treasury BNB grew');
+      // Counter updated
+      expect(await treasury.totalUsdtConverted()).to.equal(E18('60'), 'totalUsdtConverted updated');
     });
 
     // Audit: Pillar 2 — totalUsdtConverted accumulates correctly

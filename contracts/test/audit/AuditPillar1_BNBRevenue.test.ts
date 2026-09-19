@@ -12,7 +12,7 @@
  */
 import { expect } from 'chai';
 import { ethers, network } from 'hardhat';
-import { loadFixture } from '@nomicfoundation/hardhat-network-helpers';
+import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
 import type { SignerWithAddress } from '@nomicfoundation/hardhat-ethers/signers';
 
 const E18 = (n: number | string) => ethers.parseEther(String(n));
@@ -477,7 +477,7 @@ describe('Pillar 1 — BNB Revenue Engine & Auto-Buyback', () => {
       await nft.connect(alice).setApprovalForAll(await market.getAddress(), true);
 
       const priceBNB = E18('1.0');
-      const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+      const deadline = BigInt(await time.latest()) + 3600n;
       const nonce = 0n;
       const sig = await signBNBOrder(
         alice, await nft.getAddress(), 1n, 1n, priceBNB, nonce, deadline, market,
@@ -517,7 +517,7 @@ describe('Pillar 1 — BNB Revenue Engine & Auto-Buyback', () => {
       await nft.connect(alice).setApprovalForAll(await market.getAddress(), true);
 
       const priceBNB = E18('0.5');
-      const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+      const deadline = BigInt(await time.latest()) + 3600n;
       const nonce = 1n;
       const sig = await signBNBOrder(
         alice, await nft.getAddress(), 1n, 1n, priceBNB, nonce, deadline, market,
