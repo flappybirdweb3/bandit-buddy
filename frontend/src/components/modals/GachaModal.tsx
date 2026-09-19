@@ -10,11 +10,10 @@ import {
   encodePacked, parseAbi, decodeEventLog, formatEther
 } from 'viem';
 import { bscTestnet } from 'viem/chains';
-import { privateKeyToAccount } from 'viem/accounts';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import QRCode from 'qrcode';
 import { useGame } from '@/providers/GameProvider';
-import { getStoredWalletPk } from '@/hooks/useAutoWallet';
+import { useActiveWallet } from '@/hooks/useActiveWallet';
 import { api } from '@/api/client';
 import { NftStatus, MarketplaceListing, TreasuryStatus } from '@/types/game.types';
 
@@ -414,9 +413,7 @@ export function GachaModal({ onClose }: Props) {
   const [gasEstimate, setGasEstimate] = useState<bigint | null>(null);
   const [balLoading, setBalLoading] = useState<boolean>(false);
 
-  const pk = getStoredWalletPk(profile?.telegramId);
-  const hasWallet = !!profile?.walletAddress && !!pk;
-  const walletAddr = profile?.walletAddress as `0x${string}` | undefined;
+  const { address: walletAddr, account: signerAccount, canSign, walletLocked, hasWallet } = useActiveWallet(profile);
 
   const currentRecipe = FUSION_RECIPES.find((r) => r.baseTier === selectedTier) || FUSION_RECIPES[0];
 
@@ -483,11 +480,10 @@ export function GachaModal({ onClose }: Props) {
   }, [fetchBalances]);
 
   const handleClaimReferral = async () => {
-    if (!pk || !hasWallet || !walletAddr) return;
+    if (!canSign || !signerAccount || !walletAddr) return;
     setClaimReferralLoading(true);
     try {
-      const account = privateKeyToAccount(pk);
-      const walletClient = createWalletClient({ account, chain: bscTestnet, transport: http(BSC_TESTNET_RPC) });
+      const walletClient = createWalletClient({ account: signerAccount, chain: bscTestnet, transport: http(BSC_TESTNET_RPC) });
       const publicClient = createPublicClient({ chain: bscTestnet, transport: http(BSC_TESTNET_RPC) });
       const tx = await walletClient.writeContract({
         address: GACHA_ADDRESS,
@@ -587,7 +583,7 @@ export function GachaModal({ onClose }: Props) {
 
   // ── Soul Forge (Dog Fusion) Action ──────────────────────────────────────────
   const handleForgeFusion = async () => {
-    if (!pk || !hasWallet) return;
+    if (!canSign || !signerAccount) return;
 
     // 0. Pre-flight check: strictly verify that user has at least 3 available dogs
     if (!currentStat.canFuse || currentStat.availableToFuse < 3) {
@@ -636,7 +632,7 @@ export function GachaModal({ onClose }: Props) {
       return;
     }
 
-    const account = privateKeyToAccount(pk);
+    const account = signerAccount!;
     const walletClient = createWalletClient({ account, chain: bscTestnet, transport: http(BSC_TESTNET_RPC) });
     const publicClient = createPublicClient({ chain: bscTestnet, transport: http(BSC_TESTNET_RPC) });
 
@@ -750,7 +746,7 @@ export function GachaModal({ onClose }: Props) {
 
   // ── Gacha Pull Action (Standard / Golden / Mega Bulk x10) ──────────────────
   const handleGachaPull = async (mode: 'standard' | 'golden' | 'bulk10') => {
-    if (!pk || !hasWallet) return;
+    if (!canSign || !signerAccount) return;
 
     setGachaError(null);
     setGachaRevealedTier(null);
@@ -780,7 +776,7 @@ export function GachaModal({ onClose }: Props) {
       }
     }
 
-    const account = privateKeyToAccount(pk);
+    const account = signerAccount!;
     const walletClient = createWalletClient({ account, chain: bscTestnet, transport: http(BSC_TESTNET_RPC) });
     const publicClient = createPublicClient({ chain: bscTestnet, transport: http(BSC_TESTNET_RPC) });
 
@@ -926,13 +922,13 @@ export function GachaModal({ onClose }: Props) {
 
   // ── Soul Shard Pity Redeem Action ───────────────────────────────────────────
   const handleRedeemPity = async () => {
-    if (!pk || !hasWallet) return;
+    if (!canSign || !signerAccount) return;
 
     setPityError(null);
     setPityResultTier(null);
     setPityTxHash(null);
 
-    const account = privateKeyToAccount(pk);
+    const account = signerAccount!;
     const walletClient = createWalletClient({ account, chain: bscTestnet, transport: http(BSC_TESTNET_RPC) });
     const publicClient = createPublicClient({ chain: bscTestnet, transport: http(BSC_TESTNET_RPC) });
 
@@ -1111,13 +1107,13 @@ export function GachaModal({ onClose }: Props) {
             </div>
           )}
 
-          {walletAddr && !pk && !isAnyPending && (
+          {walletAddr && walletLocked && !isAnyPending && (
             <div className="rounded-2xl bg-amber-500/10 border border-amber-400/25 p-3 mb-3 flex items-start gap-2.5">
               <AlertTriangle size={15} className="text-amber-400 flex-shrink-0 mt-0.5" />
               <div className="flex-1 text-left">
-                <p className="text-amber-300 text-xs font-bold">Local Signing Key Not Found</p>
+                <p className="text-amber-300 text-xs font-bold">Wallet Not Signable on This Device</p>
                 <p className="text-white/60 text-[10px] mt-0.5 leading-relaxed">
-                  Your profile is linked to <span className="font-mono text-white/80">{shortAddr(walletAddr)}</span>, but this browser does not hold its private key. Please play on your primary device or import your key to sign transactions.
+                  Your account is linked to <span className="font-mono text-white/80">{shortAddr(walletAddr)}</span>, but this device cannot sign for it — the private key is missing or a different key is loaded. Import the correct key in Settings → BSC Wallet.
                 </p>
               </div>
             </div>
@@ -1583,19 +1579,19 @@ export function GachaModal({ onClose }: Props) {
 
                   {/* Forge CTA Button */}
                   <button
-                    disabled={!hasWallet || !hasEnoughDogs || !hasEnoughFarm || isFusionPending}
+                    disabled={!canSign || !hasEnoughDogs || !hasEnoughFarm || isFusionPending}
                     onClick={handleForgeFusion}
                     className="w-full py-4 rounded-2xl font-black text-sm active:scale-95 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
                     style={{
-                      background: hasWallet && hasEnoughDogs && hasEnoughFarm ? 'linear-gradient(135deg, #d97706, #b45309)' : undefined,
+                      background: canSign && hasEnoughDogs && hasEnoughFarm ? 'linear-gradient(135deg, #d97706, #b45309)' : undefined,
                       color: '#fff',
-                      boxShadow: hasWallet && hasEnoughDogs && hasEnoughFarm ? '0 0 25px rgba(217,119,6,0.45)' : undefined,
+                      boxShadow: canSign && hasEnoughDogs && hasEnoughFarm ? '0 0 25px rgba(217,119,6,0.45)' : undefined,
                     }}
                   >
                     {!walletAddr ? (
                       'Web3 Wallet Not Connected'
-                    ) : !pk ? (
-                      'Signing Key Missing on Device'
+                    ) : walletLocked ? (
+                      'Wallet Not Signable on This Device'
                     ) : !hasEnoughDogs ? (
                       currentStat.listedCount > 0 && currentStat.availableToFuse < 3 ? (
                         `Need 3 Available Dogs (${currentStat.listedCount} Listed on Market)`
@@ -1736,21 +1732,21 @@ export function GachaModal({ onClose }: Props) {
               {pityPhase !== 'result' && (
                 <div className="flex flex-col gap-2">
                   <button
-                    disabled={!hasWallet || soulShardCount < 100 || isPityPending}
+                    disabled={!canSign || soulShardCount < 100 || isPityPending}
                     onClick={handleRedeemPity}
                     className="w-full py-4 rounded-2xl font-black text-sm active:scale-95 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
                     style={{
-                      background: hasWallet && soulShardCount >= 100 ? 'linear-gradient(135deg, #7c3aed, #6d28d9)' : undefined,
+                      background: canSign && soulShardCount >= 100 ? 'linear-gradient(135deg, #7c3aed, #6d28d9)' : undefined,
                       color: '#fff',
-                      boxShadow: hasWallet && soulShardCount >= 100 ? '0 0 20px rgba(124,58,237,0.4)' : undefined,
+                      boxShadow: canSign && soulShardCount >= 100 ? '0 0 20px rgba(124,58,237,0.4)' : undefined,
                     }}
                   >
                     {isPityPending ? (
                       <><Loader2 size={16} className="animate-spin" /> Redeeming on BSC…</>
                     ) : !walletAddr ? (
                       'Web3 Wallet Not Connected'
-                    ) : !pk ? (
-                      'Signing Key Missing on Device'
+                    ) : walletLocked ? (
+                      'Wallet Not Signable on This Device'
                     ) : soulShardCount >= 100 ? (
                       <><Sparkles size={16} /> Redeem 100 Shards for Tier 3-5 Dog</>
                     ) : (
@@ -1797,37 +1793,61 @@ export function GachaModal({ onClose }: Props) {
 
               {/* Gacha Mode Switcher */}
               {!isGachaPending && gachaPhase !== 'result' && (
-                <div className="flex bg-white/5 rounded-2xl p-1 mb-3 border border-white/10">
-                  <button
-                    onClick={() => setPullMode('standard')}
-                    className={`flex-1 py-2 rounded-xl text-[11px] font-bold transition-all flex items-center justify-center gap-1 ${
-                      pullMode === 'standard'
-                        ? 'bg-blue-600 text-white shadow-md font-black'
-                        : 'text-white/50 hover:text-white'
-                    }`}
-                  >
-                    🎲 Standard
-                  </button>
-                  <button
-                    onClick={() => setPullMode('golden')}
-                    className={`flex-1 py-2 rounded-xl text-[11px] font-bold transition-all flex items-center justify-center gap-1 ${
-                      pullMode === 'golden'
-                        ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-black shadow-md font-black'
-                        : 'text-amber-300/60 hover:text-amber-300'
-                    }`}
-                  >
-                    ✨ Golden (2x Rates)
-                  </button>
-                  <button
-                    onClick={() => setPullMode('bulk10')}
-                    className={`flex-1 py-2 rounded-xl text-[11px] font-bold transition-all flex items-center justify-center gap-1 ${
-                      pullMode === 'bulk10'
-                        ? 'bg-gradient-to-r from-purple-600 via-pink-600 to-amber-500 text-white shadow-md font-black'
-                        : 'text-purple-300/60 hover:text-purple-300'
-                    }`}
-                  >
-                    🔥 Bulk x10 (T3+)
-                  </button>
+                <div className="mb-3">
+                  <div className="flex bg-white/5 rounded-2xl p-1 border border-white/10">
+                    <button
+                      onClick={() => setPullMode('standard')}
+                      className={`flex-1 py-2 rounded-xl text-[11px] font-bold transition-all flex items-center justify-center gap-1 ${
+                        pullMode === 'standard'
+                          ? 'bg-blue-600 text-white shadow-md font-black'
+                          : 'text-white/50 hover:text-white'
+                      }`}
+                    >
+                      🎲 Standard
+                    </button>
+                    <button
+                      onClick={() => setPullMode('golden')}
+                      className={`flex-1 py-2 rounded-xl text-[11px] font-bold transition-all flex items-center justify-center gap-1 ${
+                        pullMode === 'golden'
+                          ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-black shadow-md font-black'
+                          : 'text-amber-300/60 hover:text-amber-300'
+                      }`}
+                    >
+                      ✨ Golden (2x Rates)
+                    </button>
+                    <button
+                      onClick={() => setPullMode('bulk10')}
+                      className={`flex-1 py-2 rounded-xl text-[11px] font-bold transition-all flex items-center justify-center gap-1 ${
+                        pullMode === 'bulk10'
+                          ? 'bg-gradient-to-r from-purple-600 via-pink-600 to-amber-500 text-white shadow-md font-black'
+                          : 'text-purple-300/60 hover:text-purple-300'
+                      }`}
+                    >
+                      🔥 Bulk x10 (T3+)
+                    </button>
+                  </div>
+                  {/* Vault contribution info per pull mode */}
+                  <div className="mt-1.5 flex items-center gap-1.5 px-1 text-[9px]">
+                    {pullMode === 'standard' ? (
+                      <>
+                        <span className="text-white/30">Fee: 50 $FARM burned</span>
+                        <span className="text-white/20">·</span>
+                        <span className="text-white/25">BNB vault: no contribution</span>
+                      </>
+                    ) : pullMode === 'golden' ? (
+                      <>
+                        <span className="text-white/30">Fee: 50 $FARM + 0.002 BNB</span>
+                        <span className="text-white/20">·</span>
+                        <span className="text-amber-400/60 flex items-center gap-0.5">🔥 +0.0015 BNB → Buyback Vault</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-white/30">Fee: 450 $FARM + 0.015 BNB</span>
+                        <span className="text-white/20">·</span>
+                        <span className="text-amber-400/60 flex items-center gap-0.5">🔥 +0.01125 BNB → Buyback Vault</span>
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -2057,19 +2077,19 @@ export function GachaModal({ onClose }: Props) {
                   {/* Pull CTA Button */}
                   {pullMode === 'standard' && (
                     <button
-                      disabled={!hasWallet || (farmFloat !== null && farmFloat < 50) || isGachaPending}
+                      disabled={!canSign || (farmFloat !== null && farmFloat < 50) || isGachaPending}
                       onClick={() => handleGachaPull('standard')}
                       className="w-full py-4 rounded-2xl font-black text-sm active:scale-95 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
                       style={{
-                        background: hasWallet && farmFloat !== null && farmFloat >= 50 ? 'linear-gradient(135deg, #2563eb, #1d4ed8)' : undefined,
+                        background: canSign && farmFloat !== null && farmFloat >= 50 ? 'linear-gradient(135deg, #2563eb, #1d4ed8)' : undefined,
                         color: '#fff',
-                        boxShadow: hasWallet && farmFloat !== null && farmFloat >= 50 ? '0 0 20px rgba(37,99,235,0.4)' : undefined,
+                        boxShadow: canSign && farmFloat !== null && farmFloat >= 50 ? '0 0 20px rgba(37,99,235,0.4)' : undefined,
                       }}
                     >
                       {!walletAddr ? (
                         'Web3 Wallet Not Connected'
-                      ) : !pk ? (
-                        'Signing Key Missing on Device'
+                      ) : walletLocked ? (
+                        'Wallet Not Signable on This Device'
                       ) : farmFloat !== null && farmFloat < 50 ? (
                         'Insufficient $FARM (Requires 50 $FARM)'
                       ) : (
@@ -2082,19 +2102,19 @@ export function GachaModal({ onClose }: Props) {
 
                   {pullMode === 'golden' && (
                     <button
-                      disabled={!hasWallet || (farmFloat !== null && farmFloat < 50) || isGachaPending}
+                      disabled={!canSign || (farmFloat !== null && farmFloat < 50) || isGachaPending}
                       onClick={() => handleGachaPull('golden')}
                       className="w-full py-4 rounded-2xl font-black text-sm active:scale-95 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
                       style={{
-                        background: hasWallet && farmFloat !== null && farmFloat >= 50 ? 'linear-gradient(135deg, #d97706, #b45309)' : undefined,
+                        background: canSign && farmFloat !== null && farmFloat >= 50 ? 'linear-gradient(135deg, #d97706, #b45309)' : undefined,
                         color: '#fff',
-                        boxShadow: hasWallet && farmFloat !== null && farmFloat >= 50 ? '0 0 25px rgba(217,119,6,0.45)' : undefined,
+                        boxShadow: canSign && farmFloat !== null && farmFloat >= 50 ? '0 0 25px rgba(217,119,6,0.45)' : undefined,
                       }}
                     >
                       {!walletAddr ? (
                         'Web3 Wallet Not Connected'
-                      ) : !pk ? (
-                        'Signing Key Missing on Device'
+                      ) : walletLocked ? (
+                        'Wallet Not Signable on This Device'
                       ) : farmFloat !== null && farmFloat < 50 ? (
                         'Insufficient $FARM (Requires 50 $FARM)'
                       ) : (
@@ -2107,19 +2127,19 @@ export function GachaModal({ onClose }: Props) {
 
                   {pullMode === 'bulk10' && (
                     <button
-                      disabled={!hasWallet || (farmFloat !== null && farmFloat < 450) || isGachaPending}
+                      disabled={!canSign || (farmFloat !== null && farmFloat < 450) || isGachaPending}
                       onClick={() => handleGachaPull('bulk10')}
                       className="w-full py-4 rounded-2xl font-black text-sm active:scale-95 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
                       style={{
-                        background: hasWallet && farmFloat !== null && farmFloat >= 450 ? 'linear-gradient(135deg, #7c3aed, #db2777)' : undefined,
+                        background: canSign && farmFloat !== null && farmFloat >= 450 ? 'linear-gradient(135deg, #7c3aed, #db2777)' : undefined,
                         color: '#fff',
-                        boxShadow: hasWallet && farmFloat !== null && farmFloat >= 450 ? '0 0 25px rgba(124,58,237,0.45)' : undefined,
+                        boxShadow: canSign && farmFloat !== null && farmFloat >= 450 ? '0 0 25px rgba(124,58,237,0.45)' : undefined,
                       }}
                     >
                       {!walletAddr ? (
                         'Web3 Wallet Not Connected'
-                      ) : !pk ? (
-                        'Signing Key Missing on Device'
+                      ) : walletLocked ? (
+                        'Wallet Not Signable on This Device'
                       ) : farmFloat !== null && farmFloat < 450 ? (
                         'Insufficient $FARM (Requires 450 $FARM)'
                       ) : (

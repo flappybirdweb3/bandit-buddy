@@ -550,6 +550,10 @@ export class GuildService {
       const shieldUntil = new Date(baseTime.getTime() + SHIELD_DURATION_MS);
 
       await em.update(Guild, guild.id, { shieldUntil });
+      await em.query(
+        `INSERT INTO gold_transactions (user_id, amount, type, category, description) VALUES ($1, $2, 'BURN', 'GUILD_SHIELD', $3)`,
+        [userId, SHIELD_COST_GOLD, `Purchased 12h Energy Shield for guild "${guild.name}"`],
+      );
 
       return {
         message: `🛡️ Energy Shield activated! World Tree protected for 12 hours.`,
@@ -694,6 +698,10 @@ export class GuildService {
       }
       await em.decrement(User, { id: userId }, 'goldBalance', amount);
       await em.increment(Guild, { id: guild.id }, 'stakedFarm', amount);
+      await em.query(
+        `INSERT INTO gold_transactions (user_id, amount, type, category, description) VALUES ($1, $2, 'BURN', 'GUILD_STAKE', $3)`,
+        [userId, amount, `Staked ${amount}G to guild "${guild.name}"`],
+      );
       const updated = await em.findOneOrFail(Guild, { where: { id: guild.id } });
       return {
         message: `Staked ${amount}G to guild. Total staked: ${updated.stakedFarm}`,
@@ -860,9 +868,14 @@ export class GuildService {
             if (opexCost > 0) {
               const u = await this.userRepo.findOne({ where: { id: userId }, select: ['id', 'goldBalance'] });
               if (u && Number(u.goldBalance) >= opexCost + 100) {
+                const actions = Object.keys(updates).map((k) => k.replace(/([A-Z])/g, '_$1').toLowerCase()).join('+');
                 await this.dataSource.transaction(async (em) => {
                   await em.decrement(User, { id: userId }, 'goldBalance', opexCost);
                   await em.update(FarmPlot, gp.id, updates);
+                  await em.query(
+                    `INSERT INTO gold_transactions (user_id, amount, type, category, description) VALUES ($1, $2, 'BURN', 'BUTLER_OPEX', $3)`,
+                    [userId, opexCost, `Butler auto-fixed plot (${actions}) for ${opexCost}G`],
+                  );
                 });
               }
             }
@@ -926,6 +939,10 @@ export class GuildService {
                     hasWeeds: false,
                     totalStolen: 0,
                   });
+                  await em.query(
+                    `INSERT INTO gold_transactions (user_id, amount, type, category, description) VALUES ($1, $2, 'BURN', 'BUTLER_REPLANT', $3)`,
+                    [userId, activeCost, `Butler auto-planted ${activeSeed.name} for ${activeCost}G`],
+                  );
                 });
                 availableGold -= activeCost;
               }

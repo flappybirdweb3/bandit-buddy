@@ -581,6 +581,15 @@ export interface TreasuryStatus {
   deadAddress: string;
   isReady: boolean;
   isPaused: boolean;
+  // USDT conversion pipeline (SA IMPL-01/02)
+  usdtBalance: string;
+  usdtBalanceWei: string;
+  usdtConversionThreshold: string;
+  usdtConversionThresholdWei: string;
+  usdtConversionProgressPercent: number;
+  totalUsdtConverted: string;
+  isUsdtReady: boolean;
   recentEvents: BuyBackEventRecord[];
   lastCheckedAt: number;
+  totalGoldConverted?: string;
 }

@@ -10,10 +10,9 @@ import {
   formatUnits,
 } from 'viem';
 import { bsc, bscTestnet } from 'viem/chains';
-import { privateKeyToAccount } from 'viem/accounts';
 import { useQueryClient } from '@tanstack/react-query';
 import { useGame } from '@/providers/GameProvider';
-import { getStoredWalletPk } from '@/hooks/useAutoWallet';
+import { useActiveWallet } from '@/hooks/useActiveWallet';
 import { useExchangeRate } from '@/hooks/useExchangeRate';
 import { useDexTier } from '@/hooks/useDexTier';
 import { eventBus } from '@/game/EventBus';
@@ -54,6 +53,11 @@ const BSC_RPC_URL = IS_MAINNET
   : 'https://data-seed-prebsc-1-s1.binance.org:8545/';
 
 const GAS_BUFFER_BNB = BigInt('2000000000000000'); // 0.002 BNB for gas
+
+export const WALLET_GATEWAY_ADDRESS: `0x${string}` = (
+  import.meta.env.VITE_WALLET_GATEWAY_ADDRESS ||
+  '0xCB7B00e0f168124C0be09A7Fae628e0261E3440B'
+) as `0x${string}`;
 
 // ── ABIs ──────────────────────────────────────────────────────────────────────
 
@@ -143,6 +147,20 @@ const PANCAKE_ROUTER_ABI = [
       { name: 'path', type: 'address[]' },
     ],
     outputs: [{ name: 'amounts', type: 'uint256[]' }],
+  },
+] as const;
+
+// Minimal WalletGateway ABI — only the cashout function needed for FARM→USDT (SA ADR-01 Option B)
+const WALLET_GATEWAY_ABI = [
+  {
+    name: 'cashoutFarmToUSDT',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'farmAmount', type: 'uint256' },
+      { name: 'minUsdtOut', type: 'uint256' },
+    ],
+    outputs: [],
   },
 ] as const;
 
@@ -282,18 +300,7 @@ export function usePancakeSwap() {
 
   const chain = IS_MAINNET ? bsc : bscTestnet;
 
-  // Active address resolution: prioritize signing account derived from local private key
-  const activeAddress = useMemo<`0x${string}` | null>(() => {
-    const pk = getStoredWalletPk(profile?.telegramId);
-    if (pk) {
-      try {
-        return privateKeyToAccount(pk).address;
-      } catch {
-        // fallback
-      }
-    }
-    return (profile?.walletAddress as `0x${string}` | undefined) ?? null;
-  }, [profile?.telegramId, profile?.walletAddress]);
+  const { address: activeAddress, account: activeAccount, canSign: canSwap } = useActiveWallet(profile);
 
   // ── 1. Fetch Balances ───────────────────────────────────────────────────────
   const fetchBalances = useCallback(async () => {
@@ -504,9 +511,11 @@ export function usePancakeSwap() {
   const minReceived = useMemo(() => {
     if (!toAmount || Number(toAmount) <= 0) return '0.0';
     const num = Number(toAmount);
-    // Factor in slippage and transfer tax
     const taxRate = (direction === 'BNB_TO_FARM' || direction === 'USDT_TO_FARM') ? buyTax : sellTax;
-    const factor = Math.max(0.85, 1 - slippageTolerance - taxRate);
+    let factor = Math.max(0.85, 1 - slippageTolerance - taxRate);
+    // FARM→USDT goes through WalletGateway.cashoutFarmToUSDT: additional 1% cashout fee on gross USDT.
+    // Multiply by 0.99 so displayed "min received" reflects what the user actually receives.
+    if (direction === 'FARM_TO_USDT') factor *= 0.99;
     const decimals = direction === 'FARM_TO_BNB' ? 6 : 2;
     return (num * factor).toFixed(decimals);
   }, [toAmount, direction, buyTax, sellTax]);
@@ -522,15 +531,13 @@ export function usePancakeSwap() {
     setError(null);
     setTxHash(null);
 
-    const pk = getStoredWalletPk(profile?.telegramId);
     let walletClient;
     let userAddress: `0x${string}`;
 
-    if (pk) {
-      const account = privateKeyToAccount(pk);
-      userAddress = account.address;
+    if (canSwap && activeAccount && activeAddress) {
+      userAddress = activeAddress;
       walletClient = createWalletClient({
-        account,
+        account: activeAccount,
         chain,
         transport: http(BSC_RPC_URL),
       });
@@ -562,7 +569,7 @@ export function usePancakeSwap() {
         return;
       }
     } else {
-      const msg = 'Wallet key not found on this device. Tap the wallet icon (top-right) to import your private key or create a new wallet.';
+      const msg = 'Wallet not signable on this device. Import the correct private key in Settings → BSC Wallet.';
       setError(msg);
       setStep('error');
       setReceipt({
@@ -585,7 +592,7 @@ export function usePancakeSwap() {
     });
 
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 60 * 20); // 20 minutes
-    const signingAccount = pk ? privateKeyToAccount(pk) : userAddress;
+    const signingAccount = activeAccount ?? userAddress;
 
     try {
       let hash: `0x${string}`;
@@ -761,20 +768,21 @@ export function usePancakeSwap() {
         setStep('confirming');
         await publicClient.waitForTransactionReceipt({ hash });
       } else {
-        // Sell FARM for USDT
+        // Sell FARM for USDT via WalletGateway.cashoutFarmToUSDT() (SA ADR-01 Option B)
+        // Atomic: swap + 1% treasury fee in one transaction; prevents client-side fee bypass.
         const amountIn = parseUnits(fromAmount, 18);
-        const amountOutMin = parseUnits(
+        const minUsdtOut = parseUnits(
           Math.max(0, Number(minReceived)).toFixed(4),
           18
         );
 
-        // Step 1: Check FARM allowance
+        // Step 1: Approve FARM to WalletGateway (not PancakeRouter — gateway pulls the tokens)
         setStep('checking');
         const allowance = (await publicClient.readContract({
           address: FARM_TOKEN_ADDRESS,
           abi: ERC20_ABI,
           functionName: 'allowance',
-          args: [userAddress, PANCAKE_ROUTER_ADDRESS],
+          args: [userAddress, WALLET_GATEWAY_ADDRESS],
         })) as bigint;
 
         if (allowance < amountIn) {
@@ -784,42 +792,20 @@ export function usePancakeSwap() {
             address: FARM_TOKEN_ADDRESS,
             abi: ERC20_ABI,
             functionName: 'approve',
-            args: [PANCAKE_ROUTER_ADDRESS, amountIn],
+            args: [WALLET_GATEWAY_ADDRESS, amountIn],
           });
           await publicClient.waitForTransactionReceipt({ hash: approveTx });
         }
 
-        // Step 2: Swap FARM -> WBNB -> USDT
+        // Step 2: Call gateway — swap FARM→WBNB→USDT atomically with 1% cashout fee deducted
         setStep('swapping');
-        try {
-          hash = await walletClient.writeContract({
-            account: signingAccount,
-            address: PANCAKE_ROUTER_ADDRESS,
-            abi: PANCAKE_ROUTER_ABI,
-            functionName: 'swapExactTokensForTokensSupportingFeeOnTransferTokens',
-            args: [
-              amountIn,
-              amountOutMin,
-              [FARM_TOKEN_ADDRESS, WBNB_ADDRESS, USDT_TOKEN_ADDRESS],
-              userAddress,
-              deadline,
-            ],
-          });
-        } catch {
-          hash = await walletClient.writeContract({
-            account: signingAccount,
-            address: PANCAKE_ROUTER_ADDRESS,
-            abi: PANCAKE_ROUTER_ABI,
-            functionName: 'swapExactTokensForTokens',
-            args: [
-              amountIn,
-              amountOutMin,
-              [FARM_TOKEN_ADDRESS, WBNB_ADDRESS, USDT_TOKEN_ADDRESS],
-              userAddress,
-              deadline,
-            ],
-          });
-        }
+        hash = await walletClient.writeContract({
+          account: signingAccount,
+          address: WALLET_GATEWAY_ADDRESS,
+          abi: WALLET_GATEWAY_ABI,
+          functionName: 'cashoutFarmToUSDT',
+          args: [amountIn, minUsdtOut],
+        });
 
         setTxHash(hash);
         setStep('confirming');
@@ -1118,5 +1104,6 @@ export function usePancakeSwap() {
     farmPriceUsd,
     farmPriceBnb,
     walletAddress: activeAddress,
+    canSwap,
   };
 }

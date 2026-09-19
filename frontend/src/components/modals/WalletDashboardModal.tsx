@@ -52,6 +52,7 @@ export function WalletDashboardModal({ onClose, initialTab = 'tokens' }: WalletD
     formatFiat,
     currency,
     isBackedUp,
+    walletLocked,
     approvals,
     refreshBalances,
     isLoadingBalances,
@@ -113,7 +114,7 @@ export function WalletDashboardModal({ onClose, initialTab = 'tokens' }: WalletD
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-full glass border border-white/10 hover:border-amber-400/40 active:scale-95 transition-all text-xs font-mono group"
               title="Click to copy address"
             >
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className={`w-2 h-2 rounded-full animate-pulse ${walletLocked ? 'bg-red-400' : 'bg-emerald-400'}`} />
               <span className="text-white/80 group-hover:text-white font-semibold">{shortAddress}</span>
               {copied ? (
                 <Check size={12} className="text-emerald-400" />
@@ -159,8 +160,32 @@ export function WalletDashboardModal({ onClose, initialTab = 'tokens' }: WalletD
             </div>
           </div>
 
-          {/* Backup Alert Banner (if unbacked) */}
-          {!isBackedUp && (
+          {/* Wallet Locked Banner — wrong key on device, signing disabled */}
+          {walletLocked && (
+            <div
+              onClick={() => {
+                soundManager.play('click');
+                setActiveSubmodal('settings');
+              }}
+              className="mb-3.5 p-2.5 rounded-2xl bg-red-500/15 border border-red-500/40 flex items-center justify-between cursor-pointer hover:bg-red-500/20 active:scale-98 transition-all flex-shrink-0"
+            >
+              <div className="flex items-center gap-2">
+                <AlertTriangle size={15} className="text-red-400 flex-shrink-0" />
+                <div className="flex flex-col text-left">
+                  <span className="text-[11px] font-black text-red-300 leading-tight">
+                    Wallet Locked — Transactions Disabled
+                  </span>
+                  <span className="text-[10px] text-white/60 leading-tight">
+                    Wrong or missing key on this device — tap to fix
+                  </span>
+                </div>
+              </div>
+              <ChevronRight size={14} className="text-red-300 flex-shrink-0" />
+            </div>
+          )}
+
+          {/* Backup Alert Banner (if unbacked and not locked) */}
+          {!isBackedUp && !walletLocked && (
             <div
               onClick={() => {
                 soundManager.play('click');

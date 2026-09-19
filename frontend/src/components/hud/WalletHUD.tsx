@@ -8,7 +8,7 @@ interface WalletHUDProps {
 }
 
 export function WalletHUD({ onOpenDashboard }: WalletHUDProps) {
-  const { hasWallet, isBackedUp } = useMPCWallet();
+  const { hasWallet, isBackedUp, walletLocked } = useMPCWallet();
 
   const handleClick = () => {
     soundManager.play('click');
@@ -27,7 +27,9 @@ export function WalletHUD({ onOpenDashboard }: WalletHUDProps) {
       <Wallet size={14} />
       <span
         className={`absolute -top-1 -right-1 w-2 h-2 rounded-full ring-1 ring-black ${
-          !hasWallet
+          walletLocked
+            ? 'bg-red-400 animate-pulse'
+            : !hasWallet
             ? 'bg-amber-400 animate-pulse'
             : isBackedUp
             ? 'bg-emerald-400'

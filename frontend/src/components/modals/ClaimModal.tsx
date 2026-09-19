@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createPublicClient, createWalletClient, http, formatEther, parseEther } from 'viem';
 import { bscTestnet } from 'viem/chains';
-import { privateKeyToAccount } from 'viem/accounts';
 import {
   X, Gem, ArrowRight, CheckCircle2, ExternalLink, AlertTriangle,
   Loader2, Copy, Check, QrCode, ChevronDown, Fuel, ArrowDownLeft, TrendingUp,
@@ -18,7 +17,7 @@ import { useDynamicRates } from '@/hooks/useDynamicRates';
 import { useCashoutQuota } from '@/hooks/useCashoutQuota';
 import type { CashoutQuota, TreasuryStatus } from '@/types/game.types';
 import { usePancakeSwap } from '@/hooks/usePancakeSwap';
-import { getStoredWalletPk } from '@/hooks/useAutoWallet';
+import { useActiveWallet } from '@/hooks/useActiveWallet';
 import { eventBus } from '@/game/EventBus';
 import { SwapResultModal } from '@/components/modals/SwapResultModal';
 
@@ -727,6 +726,11 @@ function TreasuryVaultTab({ onGoToDex }: { onGoToDex: () => void }) {
   const totalBurnedNum = status ? parseFloat(status.totalBurned) : 0;
   const totalBnbSpentNum = status ? parseFloat(status.totalBnbSpent) : 0;
   const remainingBnb = Math.max(0, thresholdNum - bnbBalanceNum);
+  const usdtBalanceNum = status ? parseFloat(status.usdtBalance ?? '0') : 0;
+  const usdtThresholdNum = status ? parseFloat(status.usdtConversionThreshold ?? '50') : 50;
+  const usdtProgress = status ? Math.min(100, Math.max(0, status.usdtConversionProgressPercent ?? 0)) : 0;
+  const totalUsdtConvertedNum = status ? parseFloat(status.totalUsdtConverted ?? '0') : 0;
+  const totalGoldConvertedNum = status?.totalGoldConverted ? parseFloat(status.totalGoldConverted) : 0;
 
   return (
     <div className="space-y-3">
@@ -759,10 +763,10 @@ function TreasuryVaultTab({ onGoToDex }: { onGoToDex: () => void }) {
         </div>
 
         <p className="text-[11px] text-white/70 leading-relaxed">
-          100% of BarnBuddy protocol fees and game revenue accumulate in the Treasury Vault. When the balance hits{' '}
+          BNB from game revenue, premium pulls, cashout fees, and NFT marketplace accumulates here. When the vault hits{' '}
           <span className="font-bold text-amber-400 font-mono">{thresholdNum.toFixed(2)} BNB</span>, the smart contract
           executes an automated market buyback of <span className="font-bold text-rose-400">$FARM</span> on PancakeSwap V2 and routes
-          tokens directly to the <span className="font-bold text-white font-mono">DEAD Address</span>.
+          tokens directly to the <span className="font-bold text-white font-mono">DEAD Address</span> — permanently burned.
         </p>
       </div>
 
@@ -810,7 +814,7 @@ function TreasuryVaultTab({ onGoToDex }: { onGoToDex: () => void }) {
             )}
           </div>
           <span className="text-[10px] text-white/40 font-mono">
-            Auto-checks every 5 min
+            Auto-checks every 1 min
           </span>
         </div>
 
@@ -836,8 +840,18 @@ function TreasuryVaultTab({ onGoToDex }: { onGoToDex: () => void }) {
           </button>
         )}
         {triggerMutation.isSuccess && (
-          <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-300 text-center font-bold">
-            🔥 Buyback triggered successfully! Check BscScan below.
+          <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-300 text-center font-bold flex flex-col gap-1">
+            <span>🔥 Buyback triggered! $FARM is being burned on-chain.</span>
+            {(triggerMutation.data as any)?.txHash && (
+              <a
+                href={`https://testnet.bscscan.com/tx/${(triggerMutation.data as any).txHash}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-1 text-[10px] text-emerald-400 hover:text-emerald-300 underline font-mono"
+              >
+                View Burn Tx on BscScan <ExternalLink size={9} />
+              </a>
+            )}
           </div>
         )}
         {triggerMutation.isError && (
@@ -845,6 +859,49 @@ function TreasuryVaultTab({ onGoToDex }: { onGoToDex: () => void }) {
             {(triggerMutation.error as any)?.message || 'Buyback execution failed. Retrying in background worker.'}
           </div>
         )}
+      </div>
+
+      {/* USDT Cashout Fee Pipeline (SA IMPL-01/02) — always visible */}
+      <div className="glass rounded-2xl p-3 border border-teal-500/20 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <div className="w-6 h-6 rounded-lg bg-teal-500/20 flex items-center justify-center">
+              <span className="text-[11px]">💵</span>
+            </div>
+            <span className="text-[10px] uppercase tracking-wider font-bold text-teal-300/70">USDT Fee Pipeline</span>
+          </div>
+          {status?.isUsdtReady ? (
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-teal-500/20 text-teal-300 border border-teal-400/30 font-bold">
+              Ready to Convert
+            </span>
+          ) : (
+            <span className="text-[9px] text-white/30 font-mono">
+              {usdtProgress.toFixed(0)}% full
+            </span>
+          )}
+        </div>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-[10px] text-white/40">Accumulated (cashout fees)</div>
+            <div className="text-sm font-black font-mono text-teal-300">
+              ${usdtBalanceNum.toFixed(2)}
+              <span className="text-[10px] text-white/40 font-normal ml-1">/ ${usdtThresholdNum.toFixed(0)} USDT</span>
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-[10px] text-white/40">Total Converted</div>
+            <div className="text-xs font-bold font-mono text-white/60">${totalUsdtConvertedNum.toFixed(2)}</div>
+          </div>
+        </div>
+        <div className="relative w-full h-1.5 bg-white/5 rounded-full overflow-hidden border border-white/5">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-teal-500 to-cyan-400 transition-all duration-700"
+            style={{ width: `${Math.min(100, Math.max(usdtBalanceNum > 0 ? 3 : 0, usdtProgress))}%` }}
+          />
+        </div>
+        <p className="text-[9px] text-white/30 leading-relaxed">
+          1% cashout fee on FARM→USDT swaps accumulates here. Auto-converts to BNB at ${usdtThresholdNum.toFixed(0)} threshold to grow the buyback reserve.
+        </p>
       </div>
 
       {/* Cumulative Metrics Grid */}
@@ -857,7 +914,7 @@ function TreasuryVaultTab({ onGoToDex }: { onGoToDex: () => void }) {
           <div className="text-base font-black font-mono text-rose-400 truncate">
             {totalBurnedNum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
           </div>
-          <div className="text-[9px] text-white/40 mt-0.5">Permanent supply reduction</div>
+          <div className="text-[9px] text-white/40 mt-0.5">Buybacks + gacha + fusion burns</div>
         </div>
 
         <div className="glass rounded-2xl p-3 border border-white/5">
@@ -869,6 +926,19 @@ function TreasuryVaultTab({ onGoToDex }: { onGoToDex: () => void }) {
             {totalBnbSpentNum.toFixed(4)} BNB
           </div>
           <div className="text-[9px] text-white/40 mt-0.5">Direct market purchase</div>
+        </div>
+
+        <div className="glass rounded-2xl p-3 border border-white/5 col-span-2">
+          <div className="flex items-center gap-1 text-white/40 text-[10px] font-bold uppercase tracking-wider mb-1">
+            <Coins size={12} className="text-yellow-400" />
+            Total GOLD Converted → $FARM
+          </div>
+          <div className="flex items-baseline gap-2">
+            <span className="text-base font-black font-mono text-yellow-400 truncate">
+              {totalGoldConvertedNum.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} GOLD
+            </span>
+          </div>
+          <div className="text-[9px] text-white/40 mt-0.5">Off-chain GOLD burned via claim conversions (all time)</div>
         </div>
       </div>
 
@@ -1182,6 +1252,35 @@ function DexPancakeSwapTab({
         </div>
       </div>
 
+      {/* Min Received Info Row */}
+      {dex.toAmount && Number(dex.toAmount) > 0 && (
+        <div className="flex items-center justify-between px-1 -mt-1 text-[9px] text-white/40 font-mono">
+          <span className="flex items-center gap-1">
+            <Info size={9} className="text-white/30" />
+            Min received (2% slippage{dex.direction === 'FARM_TO_USDT' ? ' + 1% cashout fee' : ''}):
+          </span>
+          <span className="font-bold text-white/60">
+            {dex.minReceived} {dex.toToken}
+          </span>
+        </div>
+      )}
+
+      {/* FARM→USDT gateway fee notice */}
+      {dex.direction === 'FARM_TO_USDT' && (
+        <div className="flex items-start gap-1.5 px-1 py-1 rounded-lg bg-teal-500/5 border border-teal-500/15 text-[9px] text-teal-300/70 -mt-0.5">
+          <Info size={9} className="mt-0.5 shrink-0 text-teal-400/60" />
+          <span>Routed via WalletGateway: 1% cashout fee deducted from gross USDT, sent to Treasury to grow the buyback reserve.</span>
+        </div>
+      )}
+
+      {/* Kill switch warning */}
+      {dex.killSwitchActive && (
+        <div className="flex items-start gap-2 p-2.5 rounded-xl bg-red-500/10 border border-red-500/25 text-[11px] text-red-300">
+          <AlertTriangle size={13} className="text-red-400 shrink-0 mt-0.5" />
+          <span>Swapping paused — market volatility too high. The system will auto-resume when price stabilizes.</span>
+        </div>
+      )}
+
       {/* Error Notice */}
       {dex.error && (
         <div className="glass rounded-xl p-2 border border-red-500/20 bg-red-500/10 text-red-300 text-[11px] text-center">
@@ -1196,16 +1295,20 @@ function DexPancakeSwapTab({
         disabled={dex.step === 'swapping' || dex.step === 'approving' || !dex.fromAmount || dex.insufficientBalance || dex.killSwitchActive}
         className="w-full py-3.5 rounded-2xl font-black text-xs active:scale-95 transition-all disabled:opacity-40 flex items-center justify-center gap-2 text-black"
         style={{
-          background: dex.insufficientBalance
+          background: dex.killSwitchActive
+            ? '#374151'
+            : dex.insufficientBalance
             ? '#ef4444'
             : 'linear-gradient(135deg, #f59e0b, #d97706)',
-          color: dex.insufficientBalance ? '#fff' : '#000',
+          color: dex.insufficientBalance || dex.killSwitchActive ? '#fff' : '#000',
         }}
       >
         {dex.step === 'approving' && <><Loader2 size={14} className="animate-spin" /> Approving {dex.fromToken}…</>}
         {dex.step === 'swapping' && <><Loader2 size={14} className="animate-spin" /> Swapping on PancakeSwap…</>}
         {dex.step !== 'approving' && dex.step !== 'swapping' && (
-          dex.insufficientBalance
+          dex.killSwitchActive
+            ? 'Swap Paused — High Volatility'
+            : dex.insufficientBalance
             ? `Insufficient ${dex.fromToken} Balance`
             : `Swap ${dex.fromToken} → ${dex.toToken}`
         )}
@@ -1310,7 +1413,7 @@ function CashoutQuotaCard({
           </span>
         </span>
         <span className="font-mono text-white/40">
-          R = {(quota.releaseRate * 100).toFixed(1)}% {quota.priceGrowth24h !== 0 ? `(${quota.priceGrowth24h >= 0 ? '+' : ''}${quota.priceGrowth24h}% 24h)` : ''}
+          Release Rate: {(quota.releaseRate * 100).toFixed(1)}%{quota.priceGrowth24h !== 0 ? ` · ${quota.priceGrowth24h >= 0 ? '+' : ''}${quota.priceGrowth24h}% 24h` : ''}
         </span>
       </div>
     </div>
@@ -1346,7 +1449,7 @@ export function ClaimModal({ onClose, initialTab = 'convert' }: Props) {
   const { data: treasuryStatus } = useQuery<TreasuryStatus>({
     queryKey: ['treasury-status'],
     queryFn: () => api.getTreasuryStatus(),
-    refetchInterval: 20000,
+    refetchInterval: 15000,
   });
 
   // Balances
@@ -1355,17 +1458,7 @@ export function ClaimModal({ onClose, initialTab = 'convert' }: Props) {
   const [gasEstimate, setGasEstimate] = useState<bigint | null>(null);
   const [balLoading,  setBalLoading]  = useState(false);
 
-  const address = useMemo<`0x${string}` | null>(() => {
-    const pk = getStoredWalletPk(profile?.telegramId);
-    if (pk) {
-      try {
-        return privateKeyToAccount(pk).address;
-      } catch {
-        // fallback
-      }
-    }
-    return (profile?.walletAddress as `0x${string}` | undefined) ?? null;
-  }, [profile?.telegramId, profile?.walletAddress]);
+  const { address, account: signerAccount, canSign, walletLocked } = useActiveWallet(profile);
 
   const fetchBalances = useCallback(async () => {
     if (!address) return;
@@ -1418,6 +1511,7 @@ export function ClaimModal({ onClose, initialTab = 'convert' }: Props) {
       fetchBalances();
       refetchQuota();
       qc.invalidateQueries({ queryKey: ['cashout-quota'] });
+      qc.invalidateQueries({ queryKey: ['treasury-status'] });
     }
   }, [step, fetchBalances, refetchQuota, qc]);
 
@@ -1495,9 +1589,12 @@ export function ClaimModal({ onClose, initialTab = 'convert' }: Props) {
       setDirectDepositError(`Insufficient $FARM balance. You have ${farmFloat.toFixed(2)} $FARM, but entered ${parsedInput} $FARM.`);
       return;
     }
-    const pk = getStoredWalletPk(profile?.telegramId);
-    if (!pk) {
-      setDirectDepositError('No wallet found. Please reconnect in Settings.');
+    if (!canSign || !signerAccount) {
+      setDirectDepositError(
+        walletLocked
+          ? 'Wallet not signable on this device — import the correct key in Settings → BSC Wallet.'
+          : 'No wallet found. Please reconnect in Settings.'
+      );
       return;
     }
 
@@ -1507,7 +1604,7 @@ export function ClaimModal({ onClose, initialTab = 'convert' }: Props) {
     setDepositResult(null);
 
     try {
-      const account = privateKeyToAccount(pk);
+      const account = signerAccount;
       const walletClient = createWalletClient({
         account,
         chain: bscTestnet,

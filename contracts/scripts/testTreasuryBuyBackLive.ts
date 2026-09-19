@@ -15,6 +15,7 @@ async function main() {
   const farmTokenAddress = "0xB10067A034078E3FC8335Fb003eEF7334C44952f"; // FarmToken V2
   const routerAddress    = "0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3"; // PancakeSwap V2 Router
   const wbnbAddress      = "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd"; // WBNB
+  const usdtAddress      = "0x337610d27c682E347C9cD60BD4b3b107C9d34dDd"; // BSC Testnet USDT
   const DEAD_ADDRESS     = "0x000000000000000000000000000000000000dEaD";
 
   // 1. Deploy the upgraded TreasuryBuyBack contract
@@ -24,6 +25,7 @@ async function main() {
     farmTokenAddress,
     routerAddress,
     wbnbAddress,
+    usdtAddress,
     deployer.address
   );
   await treasury.waitForDeployment();

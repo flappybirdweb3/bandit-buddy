@@ -19,12 +19,17 @@ describe('TreasuryBuyBack — Auto Buy-back & Burn Mechanism', () => {
 
     const wbnbAddress = '0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd';
 
+    // Deploy mock USDT (reuse FarmToken as ERC20 stand-in for tests)
+    const MockUsdtFactory = await ethers.getContractFactory('FarmToken');
+    const mockUsdt = await MockUsdtFactory.deploy(owner.address);
+
     // 3. Deploy TreasuryBuyBack
     const TreasuryFactory = await ethers.getContractFactory('TreasuryBuyBack');
     const treasury = await TreasuryFactory.deploy(
       await farmToken.getAddress(),
       await router.getAddress(),
       wbnbAddress,
+      await mockUsdt.getAddress(),
       owner.address
     );
 
@@ -33,7 +38,7 @@ describe('TreasuryBuyBack — Auto Buy-back & Burn Mechanism', () => {
     // Fund router with FARM tokens to simulate DEX liquidity
     await farmToken.connect(owner).transfer(await router.getAddress(), parseEther(1_000_000));
 
-    return { farmToken, router, treasury, owner, caller, donor, attacker, wbnbAddress };
+    return { farmToken, mockUsdt, router, treasury, owner, caller, donor, attacker, wbnbAddress };
   }
 
   describe('Deployment & Initial State', () => {
@@ -56,7 +61,7 @@ describe('TreasuryBuyBack — Auto Buy-back & Burn Mechanism', () => {
       const TreasuryFactory = await ethers.getContractFactory('TreasuryBuyBack');
 
       await expect(
-        TreasuryFactory.deploy(ethers.ZeroAddress, await router.getAddress(), ethers.ZeroAddress, owner.address)
+        TreasuryFactory.deploy(ethers.ZeroAddress, await router.getAddress(), ethers.ZeroAddress, ethers.ZeroAddress, owner.address)
       ).to.be.revertedWithCustomError(TreasuryFactory, 'InvalidAddress');
     });
   });

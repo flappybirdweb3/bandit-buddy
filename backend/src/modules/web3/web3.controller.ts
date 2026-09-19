@@ -180,7 +180,11 @@ export class Web3Controller {
   @Public()
   @Get('treasury-status')
   async getTreasuryStatus() {
-    return this.treasuryMonitor.getStatus();
+    const [status, totalGoldConverted] = await Promise.all([
+      this.treasuryMonitor.getStatus(),
+      this.web3Service.getTotalGoldConverted(),
+    ]);
+    return { ...status, totalGoldConverted };
   }
 
   @Post('treasury-trigger')

@@ -7,6 +7,8 @@ const PANCAKE_ROUTER_TESTNET = '0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3';
 const PANCAKE_ROUTER_MAINNET = '0x10ED43C718714eb63d5aA57B78B54704E256024E';
 const WBNB_TESTNET           = '0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd';
 const WBNB_MAINNET           = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c';
+const USDT_TESTNET           = '0x337610d27c682E347C9cD60BD4b3b107C9d34dDd';
+const USDT_MAINNET           = '0x55d398326f99059fF775485246999027B3197955';
 
 async function main() {
   const [deployer] = await ethers.getSigners();
@@ -17,6 +19,7 @@ async function main() {
   const isMainnet = network.name === 'bscMainnet';
   const pancakeRouter = isMainnet ? PANCAKE_ROUTER_MAINNET : PANCAKE_ROUTER_TESTNET;
   const wbnb          = isMainnet ? WBNB_MAINNET           : WBNB_TESTNET;
+  const usdt          = isMainnet ? USDT_MAINNET           : USDT_TESTNET;
   const treasury = process.env.TREASURY_ADDRESS ?? deployer.address;
 
   // 1. Deploy FarmToken
@@ -66,6 +69,7 @@ async function main() {
     farmTokenAddress,
     pancakeRouter,
     wbnb,
+    usdt,
     deployer.address,
   );
   await treasuryContract.waitForDeployment();

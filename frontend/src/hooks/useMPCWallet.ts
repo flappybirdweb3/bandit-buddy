@@ -4,6 +4,8 @@ import { createPublicClient, createWalletClient, http, parseEther, formatEther, 
 import { bscTestnet } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { getStoredWalletPk } from '@/hooks/useAutoWallet';
+import { useActiveWallet } from '@/hooks/useActiveWallet';
+import { useGame } from '@/providers/GameProvider';
 import { useDynamicRates } from '@/hooks/useDynamicRates';
 import WebApp from '@twa-dev/sdk';
 
@@ -36,6 +38,17 @@ export const WALLET_GATEWAY_ABI = [
       { name: 'token', type: 'address' },
       { name: 'to', type: 'address' },
       { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+  {
+    // SA ADR-01 Option B: atomic FARM→USDT swap + 1% fee in one transaction
+    name: 'cashoutFarmToUSDT',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'farmAmount', type: 'uint256' },
+      { name: 'minUsdtOut', type: 'uint256' },
     ],
     outputs: [],
   },
@@ -112,10 +125,65 @@ const STORAGE_CURRENCY_KEY = 'bb_wallet_fiat_currency';
 const STORAGE_BACKUP_KEY = 'bb_wallet_backup_status';
 const STORAGE_BACKUP_DATE_KEY = 'bb_wallet_backup_date';
 const STORAGE_TX_HISTORY_KEY = 'bb_wallet_tx_history';
-const CLOUD_PK_KEY = 'bb_wk'; // Telegram CloudStorage key for private key
+const CLOUD_PK_KEY = 'bb_wk';      // legacy single-key slot (kept for backward compat)
+const CLOUD_LIST_KEY = 'bb_wk_v2'; // multi-wallet list slot
 
 export { tgCloudGet, tgCloudAvailable } from '@/hooks/telegramCloud';
 import { tgCloudSet, tgCloudGet, tgCloudAvailable } from '@/hooks/telegramCloud';
+
+// Internal: full entry with private key (never exposed outside this module)
+interface CloudWalletEntry {
+  address: string;
+  pk: string;
+  label: string;
+  backedUpAt: string;
+}
+
+// Public: display-safe entry — private key stripped before leaving the hook
+export interface CloudWalletDisplay {
+  address: string;
+  label: string;
+  backedUpAt: string;
+}
+
+function toDisplay(e: CloudWalletEntry): CloudWalletDisplay {
+  return { address: e.address, label: e.label, backedUpAt: e.backedUpAt };
+}
+
+function isValidEntry(e: unknown): e is CloudWalletEntry {
+  return (
+    typeof (e as any)?.address === 'string' &&
+    typeof (e as any)?.pk === 'string' &&
+    typeof (e as any)?.label === 'string' &&
+    typeof (e as any)?.backedUpAt === 'string'
+  );
+}
+
+async function readCloudWallets(): Promise<CloudWalletEntry[]> {
+  const raw = await tgCloudGet(CLOUD_LIST_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.every(isValidEntry)) return parsed;
+    } catch {}
+  }
+  // Migrate from legacy single-key backup
+  const legacyPk = await tgCloudGet(CLOUD_PK_KEY);
+  if (legacyPk) {
+    try {
+      const acct = privateKeyToAccount(legacyPk as `0x${string}`);
+      const entry: CloudWalletEntry = {
+        address: acct.address,
+        pk: legacyPk,
+        label: 'My Wallet',
+        backedUpAt: new Date().toISOString().split('T')[0],
+      };
+      await tgCloudSet(CLOUD_LIST_KEY, JSON.stringify([entry])).catch(() => {});
+      return [entry];
+    } catch {}
+  }
+  return [];
+}
 
 export function useMPCWallet() {
   const qc = useQueryClient();
@@ -129,18 +197,15 @@ export function useMPCWallet() {
     return 600.0; // fallback standard BNB price
   }, [farmPriceBnb, farmPriceUsd]);
 
-  // Private key & account
-  const pk = getStoredWalletPk();
-  const account = useMemo(() => {
-    if (!pk) return null;
-    try {
-      return privateKeyToAccount(pk);
-    } catch {
-      return null;
-    }
-  }, [pk]);
+  // Canonical wallet — profile.walletAddress is the single source of truth for the address,
+  // shared with GachaModal, ClaimModal, DEX tab, and all other game features.
+  const { profile } = useGame();
+  const { address, account, canSign, walletLocked } = useActiveWallet(profile);
 
-  const address = account?.address ?? null;
+  // Local private key: read for key-management UI only (export, backup, QR, import).
+  // Never used to derive address — use `address` from useActiveWallet for all on-chain reads.
+  const localPk = getStoredWalletPk(profile?.telegramId);
+
   const shortAddress = useMemo(() => {
     if (!address) return '';
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
@@ -176,26 +241,29 @@ export function useMPCWallet() {
     return localStorage.getItem(STORAGE_BACKUP_DATE_KEY);
   });
 
-  // On mount: verify a cloud backup actually exists (localStorage flag may have been cleared)
+  const [cloudWallets, setCloudWallets] = useState<CloudWalletDisplay[]>([]);
+
+  // On address change: load cloud wallet list and sync isBackedUp badge.
+  // isBackedUp = true when the profile wallet's key exists in Telegram CloudStorage.
   useEffect(() => {
-    tgCloudGet(CLOUD_PK_KEY).then((cloudPk) => {
-      if (cloudPk) {
-        // Cloud backup exists — sync localStorage flag so badge is correct
-        const today = localStorage.getItem(STORAGE_BACKUP_DATE_KEY) || new Date().toISOString().split('T')[0];
+    if (!address) return;
+    readCloudWallets().then((wallets) => {
+      setCloudWallets(wallets.map(toDisplay));
+      const activeEntry = wallets.find((w) => w.address.toLowerCase() === address.toLowerCase());
+      if (activeEntry) {
+        const savedDate = localStorage.getItem(STORAGE_BACKUP_DATE_KEY) || activeEntry.backedUpAt;
         localStorage.setItem(STORAGE_BACKUP_KEY, '1');
-        localStorage.setItem(STORAGE_BACKUP_DATE_KEY, today);
+        localStorage.setItem(STORAGE_BACKUP_DATE_KEY, savedDate);
         setIsBackedUp(true);
-        setLastBackupDate(today);
-      } else if (!cloudPk && localStorage.getItem(STORAGE_BACKUP_KEY) === '1') {
-        // localStorage says backed up but cloud has nothing — badge was stale
+        setLastBackupDate(savedDate);
+      } else if (localStorage.getItem(STORAGE_BACKUP_KEY) === '1') {
         localStorage.removeItem(STORAGE_BACKUP_KEY);
         localStorage.removeItem(STORAGE_BACKUP_DATE_KEY);
         setIsBackedUp(false);
         setLastBackupDate(null);
       }
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [address]);
 
   // Client instances
   const publicClient = useMemo(() => {
@@ -289,38 +357,96 @@ export function useMPCWallet() {
     });
   }, []);
 
-  // Quick Cloud Backup — actually saves pk to Telegram CloudStorage
+  // Cloud Backup — upserts the locally stored key into the multi-wallet cloud list.
+  // Uses localPk directly (not the canSign account) so users can always back up
+  // whatever key is on this device, even when it doesn't match the profile wallet.
   const performCloudBackup = useCallback(async () => {
-    if (!pk) throw new Error('No wallet key to back up');
-    await tgCloudSet(CLOUD_PK_KEY, pk);
+    if (!localPk) throw new Error('No wallet key to back up on this device');
+    let backupAcct: ReturnType<typeof privateKeyToAccount>;
+    try {
+      backupAcct = privateKeyToAccount(localPk);
+    } catch {
+      throw new Error('Invalid private key stored on this device');
+    }
+    const wallets = await readCloudWallets();
+    const idx = wallets.findIndex((w) => w.address.toLowerCase() === backupAcct.address.toLowerCase());
     const today = new Date().toISOString().split('T')[0];
+    const entry: CloudWalletEntry = {
+      address: backupAcct.address,
+      pk: localPk,
+      label: idx >= 0 ? wallets[idx].label : `Wallet ${wallets.length + 1}`,
+      backedUpAt: today,
+    };
+    if (idx >= 0) {
+      wallets[idx] = entry;
+    } else {
+      if (wallets.length >= 20) {
+        throw new Error('Cloud backup limit reached (20 wallets max). Delete old backups first.');
+      }
+      wallets.push(entry);
+    }
+    await tgCloudSet(CLOUD_LIST_KEY, JSON.stringify(wallets));
+    await tgCloudSet(CLOUD_PK_KEY, localPk).catch(() => {});
     localStorage.setItem(STORAGE_BACKUP_KEY, '1');
     localStorage.setItem(STORAGE_BACKUP_DATE_KEY, today);
     setIsBackedUp(true);
     setLastBackupDate(today);
+    setCloudWallets(wallets.map(toDisplay));
     try { (WebApp as any)?.HapticFeedback?.notificationOccurred?.('success'); } catch {}
     return true;
-  }, [pk]);
+  }, [localPk]);
 
-  // Restore key from Telegram CloudStorage → localStorage, returns true if found
-  const restoreFromCloud = useCallback(async (): Promise<boolean> => {
-    const cloudPk = await tgCloudGet(CLOUD_PK_KEY);
-    if (!cloudPk) return false;
+  // Restore a specific wallet by address, or the only wallet if list has 1 entry
+  const restoreFromCloud = useCallback(async (targetAddress?: string): Promise<boolean> => {
+    const wallets = await readCloudWallets();
+    let target: CloudWalletEntry | undefined;
+    if (targetAddress) {
+      target = wallets.find((w) => w.address.toLowerCase() === targetAddress.toLowerCase());
+    } else {
+      target = wallets.length === 1 ? wallets[0] : undefined;
+    }
+    if (!target) return false;
     try {
-      privateKeyToAccount(cloudPk as `0x${string}`); // validate before storing
+      const derived = privateKeyToAccount(target.pk as `0x${string}`);
+      // Verify the stored key actually derives the claimed address — catches corrupted entries
+      if (derived.address.toLowerCase() !== target.address.toLowerCase()) return false;
     } catch {
       return false;
     }
     const tid = (WebApp as any)?.initDataUnsafe?.user?.id;
     const userKey = tid ? `bb_wallet_pk_${tid}` : 'bb_wallet_pk';
-    localStorage.setItem(userKey, cloudPk);
-    localStorage.setItem('bb_wallet_pk', cloudPk);
+    localStorage.setItem(userKey, target.pk);
+    localStorage.setItem('bb_wallet_pk', target.pk);
     return true;
+  }, []);
+
+  // Remove a wallet entry from the cloud backup list
+  const deleteCloudWallet = useCallback(async (targetAddress: string): Promise<void> => {
+    const wallets = await readCloudWallets();
+    const filtered = wallets.filter((w) => w.address.toLowerCase() !== targetAddress.toLowerCase());
+    await tgCloudSet(CLOUD_LIST_KEY, JSON.stringify(filtered));
+    setCloudWallets(filtered.map(toDisplay));
+    if (address && address.toLowerCase() === targetAddress.toLowerCase()) {
+      localStorage.removeItem(STORAGE_BACKUP_KEY);
+      localStorage.removeItem(STORAGE_BACKUP_DATE_KEY);
+      setIsBackedUp(false);
+      setLastBackupDate(null);
+    }
+  }, [address]);
+
+  // Rename a wallet entry label in the cloud backup list
+  const renameCloudWallet = useCallback(async (targetAddress: string, newLabel: string): Promise<void> => {
+    const wallets = await readCloudWallets();
+    const idx = wallets.findIndex((w) => w.address.toLowerCase() === targetAddress.toLowerCase());
+    if (idx < 0) return;
+    wallets[idx] = { ...wallets[idx], label: newLabel.trim() || wallets[idx].label };
+    await tgCloudSet(CLOUD_LIST_KEY, JSON.stringify(wallets));
+    setCloudWallets(wallets.map(toDisplay));
   }, []);
 
   // Send BNB Action
   const sendBnb = useCallback(async ({ recipient, amountEther }: { recipient: string; amountEther: string }): Promise<Hash> => {
-    if (!walletClient || !account) throw new Error('Wallet client not initialized');
+    if (!canSign || !account || !walletClient) throw new Error(walletLocked ? 'Wallet not signable on this device. Import the correct key in Settings.' : 'No wallet connected.');
     if (!isAddress(recipient)) throw new Error('Invalid BSC recipient address');
 
     const value = parseEther(amountEther);
@@ -353,7 +479,7 @@ export function useMPCWallet() {
 
   // Send FARM Action
   const sendFarm = useCallback(async ({ recipient, amountFarm }: { recipient: string; amountFarm: string }): Promise<Hash> => {
-    if (!walletClient || !account) throw new Error('Wallet client not initialized');
+    if (!canSign || !account || !walletClient) throw new Error(walletLocked ? 'Wallet not signable on this device. Import the correct key in Settings.' : 'No wallet connected.');
     if (!isAddress(recipient)) throw new Error('Invalid BSC recipient address');
 
     const amountWei = parseEther(amountFarm);
@@ -402,7 +528,7 @@ export function useMPCWallet() {
 
   // Send USDT Action
   const sendUsdt = useCallback(async ({ recipient, amountUsdt }: { recipient: string; amountUsdt: string }): Promise<Hash> => {
-    if (!walletClient || !account) throw new Error('Wallet client not initialized');
+    if (!canSign || !account || !walletClient) throw new Error(walletLocked ? 'Wallet not signable on this device. Import the correct key in Settings.' : 'No wallet connected.');
     if (!isAddress(recipient)) throw new Error('Invalid BSC recipient address');
 
     const amountWei = parseEther(amountUsdt);
@@ -500,7 +626,7 @@ export function useMPCWallet() {
   });
 
   const revokeApproval = useCallback(async (spenderAddress: `0x${string}`): Promise<Hash> => {
-    if (!walletClient || !account) throw new Error('Wallet client not initialized');
+    if (!canSign || !account || !walletClient) throw new Error(walletLocked ? 'Wallet not signable on this device.' : 'No wallet connected.');
 
     const txHash = await walletClient.writeContract({
       address: FARM_TOKEN_ADDRESS,
@@ -532,8 +658,10 @@ export function useMPCWallet() {
     account,
     address,
     shortAddress,
-    hasWallet: !!account,
-    pk,
+    hasWallet: !!address,
+    canSign,
+    walletLocked,
+    pk: localPk,
     bnbBalance,
     farmBalance,
     usdtBalance,
@@ -554,8 +682,11 @@ export function useMPCWallet() {
     isBackedUp,
     lastBackupDate,
     cloudStorageAvailable: tgCloudAvailable(),
+    cloudWallets,
     performCloudBackup,
     restoreFromCloud,
+    deleteCloudWallet,
+    renameCloudWallet,
     sendBnb,
     sendFarm,
     sendUsdt,

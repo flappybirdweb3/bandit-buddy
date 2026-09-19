@@ -40,12 +40,17 @@ describe('E2E Ecosystem Simulation: BNB Tax Revenue Streams -> Vault -> 2.0 BNB 
     const router = await MockRouterFactory.deploy();
     const wbnbAddress = '0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd';
 
+    // Deploy mock USDT for TreasuryBuyBack constructor
+    const MockUsdtFactory = await ethers.getContractFactory('FarmToken');
+    const mockUsdt = await MockUsdtFactory.deploy(owner.address);
+
     // 3. Deploy TreasuryBuyBack (threshold = 2.0 BNB)
     const TreasuryFactory = await ethers.getContractFactory('TreasuryBuyBack');
     const treasury = await TreasuryFactory.deploy(
       await farmToken.getAddress(),
       await router.getAddress(),
       wbnbAddress,
+      await mockUsdt.getAddress(),
       owner.address
     );
     const treasuryAddress = await treasury.getAddress();

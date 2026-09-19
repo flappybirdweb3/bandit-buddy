@@ -1847,4 +1847,13 @@ export class Web3Service {
       message: `Activated ${subType === 2 ? '30-Day' : '7-Day'} Barn Butler & Crop Insurance!`,
     };
   }
+
+  async getTotalGoldConverted(): Promise<string> {
+    const result = await this.dataSource.query(
+      `SELECT COALESCE(SUM(amount), 0)::numeric(20,2) AS total
+       FROM gold_transactions
+       WHERE type = 'BURN' AND category = 'CLAIM_WITHDRAW'`,
+    );
+    return result?.[0]?.total ?? '0';
+  }
 }

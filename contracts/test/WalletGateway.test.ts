@@ -19,11 +19,19 @@ describe('WalletGateway (0.3% Outbound Withdrawal Fee & Routing)', () => {
     farmToken = (await FarmTokenFactory.deploy(owner.address)) as unknown as FarmToken;
     await farmToken.waitForDeployment();
 
-    // Deploy WalletGateway pointing to treasuryVault and farmToken
+    // Deploy WalletGateway — new constructor includes pancakeRouter, usdtToken, wbnb
+    // Tests here only cover routeBNBTransfer/routeTokenTransfer; cashoutFarmToUSDT is tested separately.
+    // Use signer addresses as valid non-zero placeholders for the PancakeSwap params.
+    const MOCK_ROUTER = owner.address;    // placeholder — not used in these tests
+    const MOCK_USDT   = user.address;     // placeholder — not used in these tests
+    const MOCK_WBNB   = recipient.address; // placeholder — not used in these tests
     const GatewayFactory = await ethers.getContractFactory('WalletGateway');
     gateway = (await GatewayFactory.deploy(
       treasuryVault.address,
       farmToken.target,
+      MOCK_ROUTER,
+      MOCK_USDT,
+      MOCK_WBNB,
       owner.address
     )) as unknown as WalletGateway;
     await gateway.waitForDeployment();

@@ -320,6 +320,10 @@ export class FarmService implements OnApplicationBootstrap {
 
       await qr.manager.update(User, userId, { goldBalance: () => `"gold_balance" - ${cost}` });
       await qr.manager.save(FarmPlot, qr.manager.create(FarmPlot, { userId, plotIndex: currentCount }));
+      await qr.manager.query(
+        `INSERT INTO gold_transactions (user_id, amount, type, category, description) VALUES ($1, $2, 'BURN', 'PLOT_UNLOCK', $3)`,
+        [userId, cost, `Unlocked plot #${currentCount + 1} for ${cost}G`],
+      );
       await qr.commitTransaction();
 
       const newCount = currentCount + 1;
@@ -366,6 +370,10 @@ export class FarmService implements OnApplicationBootstrap {
 
       await qr.manager.update(User, userId, { goldBalance: () => `"gold_balance" - ${cost}` });
       await qr.manager.update(FarmPlot, plotId, { level: currentLevel + 1 });
+      await qr.manager.query(
+        `INSERT INTO gold_transactions (user_id, amount, type, category, description) VALUES ($1, $2, 'BURN', 'PLOT_UPGRADE', $3)`,
+        [userId, cost, `Upgraded plot to level ${currentLevel + 1} for ${cost}G`],
+      );
       await qr.commitTransaction();
 
       const newLevel = currentLevel + 1;

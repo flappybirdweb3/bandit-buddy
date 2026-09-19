@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import {
   X, ArrowLeft, Cloud, QrCode, KeyRound, Check, Copy, Eye, EyeOff,
-  ShieldCheck, AlertTriangle, Globe, ChevronRight, CheckCircle2, LogIn
+  ShieldCheck, AlertTriangle, Globe, ChevronRight, CheckCircle2, LogIn,
+  Trash2, Pencil, List
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { privateKeyToAccount } from 'viem/accounts';
-import { useMPCWallet, FiatCurrency } from '@/hooks/useMPCWallet';
+import { useMPCWallet, FiatCurrency, CloudWalletDisplay } from '@/hooks/useMPCWallet';
 import { getUserWalletKey } from '@/hooks/useAutoWallet';
 import { api } from '@/api/client';
 import { soundManager } from '@/sounds/SoundManager';
@@ -21,14 +22,19 @@ export function WalletSettingsModal({ onClose, onBack }: WalletSettingsModalProp
     isBackedUp,
     lastBackupDate,
     cloudStorageAvailable,
+    cloudWallets,
     performCloudBackup,
     restoreFromCloud,
+    deleteCloudWallet,
+    renameCloudWallet,
     pk,
+    address,
+    walletLocked,
     currency,
     setCurrency,
   } = useMPCWallet();
 
-  const [activeSubView, setActiveSubView] = useState<'main' | 'export_key' | 'qr_backup' | 'import_key'>(!pk ? 'import_key' : 'main');
+  const [activeSubView, setActiveSubView] = useState<'main' | 'export_key' | 'qr_backup' | 'import_key' | 'cloud_wallets'>(!pk ? 'import_key' : 'main');
   const [showKey, setShowKey] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
   const [qrBackupUrl, setQrBackupUrl] = useState<string>('');
@@ -50,6 +56,13 @@ export function WalletSettingsModal({ onClose, onBack }: WalletSettingsModalProp
   const [isRestoring, setIsRestoring] = useState(false);
   const [restoreError, setRestoreError] = useState('');
   const [restoreSuccess, setRestoreSuccess] = useState(false);
+
+  // Cloud wallet manager state
+  const [isDeletingAddress, setIsDeletingAddress] = useState('');
+  const [deleteConfirmAddress, setDeleteConfirmAddress] = useState('');
+  const [editingLabel, setEditingLabel] = useState('');
+  const [labelInputValue, setLabelInputValue] = useState('');
+  const [cloudManagerError, setCloudManagerError] = useState('');
 
   // Trigger Cloud Backup
   const handleQuickBackup = async () => {
@@ -103,14 +116,19 @@ export function WalletSettingsModal({ onClose, onBack }: WalletSettingsModalProp
     const normalized = (raw.startsWith('0x') ? raw : `0x${raw}`) as `0x${string}`;
     setIsImporting(true);
     try {
-      privateKeyToAccount(normalized); // validates format
+      const importedAcct = privateKeyToAccount(normalized);
       const tid = (WebApp as any)?.initDataUnsafe?.user?.id;
       const userKey = getUserWalletKey(tid);
       localStorage.setItem(userKey, normalized);
-      localStorage.setItem('bb_wallet_pk', normalized); // legacy key
+      localStorage.setItem('bb_wallet_pk', normalized);
       soundManager.play('coin');
       try { (WebApp as any)?.HapticFeedback?.notificationOccurred?.('success'); } catch {}
       setImportSuccess(true);
+      // If importing a DIFFERENT wallet than the currently linked one,
+      // unlink the old address so useAutoWallet can re-link the new one on reload.
+      if (address && importedAcct.address.toLowerCase() !== address.toLowerCase()) {
+        await api.unlinkWallet().catch(() => {});
+      }
       setTimeout(() => window.location.reload(), 1500);
     } catch {
       soundManager.play('error');
@@ -121,6 +139,10 @@ export function WalletSettingsModal({ onClose, onBack }: WalletSettingsModalProp
   };
 
   const handleRestoreFromCloud = async () => {
+    if (cloudWallets.length > 1) {
+      setActiveSubView('cloud_wallets');
+      return;
+    }
     setRestoreError('');
     setIsRestoring(true);
     try {
@@ -131,12 +153,66 @@ export function WalletSettingsModal({ onClose, onBack }: WalletSettingsModalProp
         soundManager.play('coin');
         try { (WebApp as any)?.HapticFeedback?.notificationOccurred?.('success'); } catch {}
         setRestoreSuccess(true);
+        // If restoring a different wallet address, unlink the old one so
+        // useAutoWallet re-links the restored address on the next load.
+        const restoredAddr = cloudWallets[0]?.address;
+        if (restoredAddr && address && restoredAddr.toLowerCase() !== address.toLowerCase()) {
+          await api.unlinkWallet().catch(() => {});
+        }
         setTimeout(() => window.location.reload(), 1500);
       }
     } catch {
       setRestoreError('Cloud restore failed. Your Telegram version may not support CloudStorage.');
     } finally {
       setIsRestoring(false);
+    }
+  };
+
+  const handleRestoreSpecific = async (targetAddress: string) => {
+    setCloudManagerError('');
+    setIsRestoring(true);
+    try {
+      const ok = await restoreFromCloud(targetAddress);
+      if (ok) {
+        soundManager.play('coin');
+        try { (WebApp as any)?.HapticFeedback?.notificationOccurred?.('success'); } catch {}
+        // If restoring a wallet that differs from current profile wallet,
+        // unlink first so useAutoWallet re-links the new address on reload.
+        if (address && targetAddress.toLowerCase() !== address.toLowerCase()) {
+          await api.unlinkWallet().catch(() => {});
+        }
+        setTimeout(() => window.location.reload(), 1200);
+      } else {
+        soundManager.play('error');
+        setCloudManagerError('Restore failed: the backup key is invalid or mismatched. Delete this entry and re-backup.');
+      }
+    } catch {
+      soundManager.play('error');
+      setCloudManagerError('Restore failed. Please try again.');
+    }
+    setIsRestoring(false);
+  };
+
+  const handleDeleteBackup = async (targetAddress: string) => {
+    if (deleteConfirmAddress !== targetAddress) {
+      setDeleteConfirmAddress(targetAddress); // first tap: show confirm
+      return;
+    }
+    setDeleteConfirmAddress('');
+    setIsDeletingAddress(targetAddress);
+    try {
+      await deleteCloudWallet(targetAddress);
+      soundManager.play('click');
+    } catch {
+      setCloudManagerError('Failed to delete backup. Please try again.');
+    }
+    setIsDeletingAddress('');
+  };
+
+  const handleSaveLabel = async (targetAddress: string) => {
+    setEditingLabel('');
+    if (labelInputValue.trim()) {
+      await renameCloudWallet(targetAddress, labelInputValue.trim()).catch(() => {});
     }
   };
 
@@ -165,6 +241,8 @@ export function WalletSettingsModal({ onClose, onBack }: WalletSettingsModalProp
             onClick={() => {
               if (activeSubView !== 'main') {
                 setActiveSubView('main');
+                setDeleteConfirmAddress('');
+                setCloudManagerError('');
               } else if (onBack) {
                 onBack();
               } else {
@@ -184,6 +262,8 @@ export function WalletSettingsModal({ onClose, onBack }: WalletSettingsModalProp
                 ? 'Export Private Key'
                 : activeSubView === 'import_key'
                 ? 'Import Private Key'
+                : activeSubView === 'cloud_wallets'
+                ? 'Cloud Backup Manager'
                 : 'QR Code Key Backup'}
             </span>
           </div>
@@ -240,25 +320,36 @@ export function WalletSettingsModal({ onClose, onBack }: WalletSettingsModalProp
 
               <p className="text-[11px] text-white/50 leading-relaxed">
                 {isBackedUp
-                  ? `Your key share is safely backed up to your encrypted Telegram cloud on ${lastBackupDate || 'recent date'}.`
+                  ? `Backed up to Telegram cloud on ${lastBackupDate || 'recent date'}. ${cloudWallets.length > 1 ? `${cloudWallets.length} wallets saved.` : ''}`
                   : 'Back up your keyless wallet to prevent losing access if you switch devices or clear app data.'}
               </p>
 
-              <button
-                onClick={handleQuickBackup}
-                disabled={isBackingUp || !pk || !cloudStorageAvailable}
-                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 text-black font-black text-xs active:scale-95 transition-all flex items-center justify-center gap-2 shadow-md shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isBackingUp ? (
-                  <div className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <Cloud size={14} />
+              <div className="flex gap-2">
+                <button
+                  onClick={handleQuickBackup}
+                  disabled={isBackingUp || !pk || !cloudStorageAvailable}
+                  className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 text-black font-black text-xs active:scale-95 transition-all flex items-center justify-center gap-2 shadow-md shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isBackingUp ? (
+                    <div className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Cloud size={14} />
+                  )}
+                  <span>{isBackedUp ? 'Sync Backup' : 'Quick Backup'}</span>
+                </button>
+                {cloudWallets.length > 0 && (
+                  <button
+                    onClick={() => { soundManager.play('click'); setActiveSubView('cloud_wallets'); }}
+                    className="px-3 py-2.5 rounded-xl glass border border-white/10 hover:border-amber-400/40 text-white/60 hover:text-white text-xs font-bold active:scale-95 transition-all flex items-center gap-1.5"
+                  >
+                    <List size={14} />
+                    <span className="text-[11px]">{cloudWallets.length}</span>
+                  </button>
                 )}
-                <span>{isBackedUp ? 'Sync / Update Cloud Backup' : 'Quick Backup (Cloud)'}</span>
-              </button>
+              </div>
             </div>
 
-            {/* Import Key — shown prominently when wallet is missing */}
+            {/* Import Key — shown prominently when wallet key is missing entirely */}
             {!pk && (
               <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-400/40 flex flex-col gap-3">
                 <div className="flex items-center gap-2">
@@ -274,6 +365,26 @@ export function WalletSettingsModal({ onClose, onBack }: WalletSettingsModalProp
                 >
                   <LogIn size={14} />
                   Import Private Key
+                </button>
+              </div>
+            )}
+
+            {/* Wrong key warning — key exists but signs a different address than profile wallet */}
+            {pk && walletLocked && (
+              <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/40 flex flex-col gap-3">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle size={16} className="text-red-400 flex-shrink-0" />
+                  <span className="text-xs font-bold text-red-300">Wrong key loaded — wallet locked</span>
+                </div>
+                <p className="text-[11px] text-white/50 leading-relaxed">
+                  The key on this device signs a <span className="text-red-300 font-semibold">different address</span> than your linked profile wallet{address ? ` (${address.slice(0, 8)}…${address.slice(-6)})` : ''}. Game transactions will fail until you import the correct key.
+                </p>
+                <button
+                  onClick={() => { soundManager.play('click'); setActiveSubView('import_key'); }}
+                  className="w-full py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-500 text-white font-black text-xs active:scale-95 transition-all flex items-center justify-center gap-2 shadow-md shadow-red-500/20"
+                >
+                  <LogIn size={14} />
+                  Import Correct Key
                 </button>
               </div>
             )}
@@ -450,10 +561,17 @@ export function WalletSettingsModal({ onClose, onBack }: WalletSettingsModalProp
               >
                 {isRestoring ? (
                   <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : cloudWallets.length > 1 ? (
+                  <List size={14} />
                 ) : (
                   <Cloud size={14} />
                 )}
-                <span>{isRestoring ? 'Checking Cloud…' : restoreSuccess ? 'Restored!' : 'Restore from Cloud Backup'}</span>
+                <span>
+                  {isRestoring ? 'Checking Cloud…'
+                    : restoreSuccess ? 'Restored!'
+                    : cloudWallets.length > 1 ? `Choose from ${cloudWallets.length} Cloud Backups`
+                    : 'Restore from Cloud Backup'}
+                </span>
               </button>
             </div>
 
@@ -544,6 +662,160 @@ export function WalletSettingsModal({ onClose, onBack }: WalletSettingsModalProp
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* View 5: Cloud Backup Manager */}
+        {activeSubView === 'cloud_wallets' && (
+          <div className="flex-1 overflow-y-auto space-y-3 pr-1 text-left animate-fade-in">
+            <p className="text-[11px] text-white/40">
+              {cloudWallets.length === 0
+                ? 'No wallets backed up yet.'
+                : `${cloudWallets.length} wallet${cloudWallets.length !== 1 ? 's' : ''} backed up to your Telegram account.`}
+            </p>
+
+            {cloudManagerError && (
+              <div className="p-2.5 rounded-2xl bg-red-500/20 border border-red-500/40 text-red-300 text-xs flex items-start gap-2 animate-fade-in">
+                <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+                <span>{cloudManagerError}</span>
+              </div>
+            )}
+
+            {cloudWallets.length === 0 ? (
+              <div className="p-6 rounded-2xl bg-white/5 border border-white/10 flex flex-col items-center gap-2">
+                <Cloud size={28} className="text-white/20" />
+                <p className="text-xs text-white/40 text-center">No backups found.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {cloudWallets.map((entry) => {
+                  const isActive = !!address && address.toLowerCase() === entry.address.toLowerCase();
+                  const isEditingThis = editingLabel === entry.address;
+                  const isDeleting = isDeletingAddress === entry.address;
+                  return (
+                    <div
+                      key={entry.address}
+                      className={`glass rounded-2xl p-3 border flex flex-col gap-2.5 ${isActive ? 'border-amber-400/40 bg-amber-500/5' : 'border-white/10'}`}
+                    >
+                      {/* Label + address row */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          {isEditingThis ? (
+                            <input
+                              className="bg-black/40 border border-amber-400/50 rounded-lg px-2 py-1 text-xs text-white w-full focus:outline-none"
+                              value={labelInputValue}
+                              onChange={(e) => setLabelInputValue(e.target.value)}
+                              onBlur={() => handleSaveLabel(entry.address)}
+                              onKeyDown={(e) => e.key === 'Enter' && handleSaveLabel(entry.address)}
+                              autoFocus
+                              maxLength={30}
+                            />
+                          ) : (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs font-bold text-white truncate">{entry.label}</span>
+                              <button
+                                onClick={() => { setEditingLabel(entry.address); setLabelInputValue(entry.label); }}
+                                className="text-white/20 hover:text-white/60 transition-colors flex-shrink-0"
+                              >
+                                <Pencil size={10} />
+                              </button>
+                            </div>
+                          )}
+                          <span className="text-[10px] text-white/40 font-mono">
+                            {entry.address.slice(0, 8)}…{entry.address.slice(-6)}
+                          </span>
+                        </div>
+                        <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                          {isActive && (
+                            <span className="px-1.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-400/30 text-amber-300 text-[9px] font-bold">
+                              Active
+                            </span>
+                          )}
+                          <span className="text-[9px] text-white/30">{entry.backedUpAt}</span>
+                        </div>
+                      </div>
+
+                      {/* Action buttons */}
+                      {deleteConfirmAddress === entry.address ? (
+                        <div className="flex flex-col gap-1.5">
+                          <p className="text-[10px] text-red-300 flex items-center gap-1">
+                            <AlertTriangle size={10} /> Remove this backup permanently?
+                          </p>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => setDeleteConfirmAddress('')}
+                              className="flex-1 py-1.5 rounded-xl glass border border-white/10 text-white/60 font-bold text-[11px] active:scale-95 transition-all"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={() => handleDeleteBackup(entry.address)}
+                              disabled={isDeleting}
+                              className="flex-1 py-1.5 rounded-xl bg-red-600 text-white font-black text-[11px] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-1"
+                            >
+                              {isDeleting ? <div className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" /> : <Trash2 size={11} />}
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          {!isActive && (
+                            <button
+                              onClick={() => handleRestoreSpecific(entry.address)}
+                              disabled={isRestoring || isDeleting}
+                              className="flex-1 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-500 text-white font-black text-[11px] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-1.5"
+                            >
+                              {isRestoring ? (
+                                <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                              ) : (
+                                <Cloud size={12} />
+                              )}
+                              Restore to Device
+                            </button>
+                          )}
+                          <button
+                            onClick={() => { setCloudManagerError(''); handleDeleteBackup(entry.address); }}
+                            disabled={isDeleting || isRestoring}
+                            className={`${isActive ? 'flex-1' : 'w-9'} py-1.5 rounded-xl glass border border-red-500/30 text-red-400 font-bold text-[11px] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-1.5`}
+                          >
+                            {isDeleting ? (
+                              <div className="w-3 h-3 border border-red-400 border-t-transparent rounded-full animate-spin" />
+                            ) : (
+                              <Trash2 size={12} />
+                            )}
+                            {isActive ? 'Remove Backup' : ''}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Backup current wallet if not already in list */}
+            {pk && address && !cloudWallets.find((w) => w.address.toLowerCase() === address.toLowerCase()) && (
+              <button
+                onClick={handleQuickBackup}
+                disabled={isBackingUp || !cloudStorageAvailable}
+                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 text-black font-black text-xs active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isBackingUp ? (
+                  <div className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <Cloud size={14} />
+                )}
+                Backup Current Wallet
+              </button>
+            )}
+
+            {backupSuccessToast && (
+              <div className="p-2.5 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-2 animate-fade-in">
+                <CheckCircle2 size={15} />
+                <span>Wallet added to cloud backup!</span>
+              </div>
+            )}
           </div>
         )}
 
