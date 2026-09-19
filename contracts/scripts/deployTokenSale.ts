@@ -25,7 +25,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const USDT: Record<string, string> = {
-  bscTestnet: '0x337610d27c682E347C9cD60BD4b3b107C9d34dD9', // Binance-peg USDT testnet
+  bscTestnet: '0x337610d27C682e347c9cD60bD4b3B107c9D34dD9', // Binance-peg USDT testnet
   bscMainnet: '0x55d398326f99059fF775485246999027B3197955', // Binance-peg USDT mainnet
 };
 
@@ -45,7 +45,7 @@ async function main() {
     depInfo = JSON.parse(fs.readFileSync(depFile, 'utf8'));
   }
 
-  const FARM_ADDRESS = depInfo['FarmToken'] ?? process.env.FARM_TOKEN_ADDRESS;
+  const FARM_ADDRESS = depInfo['farmToken'] ?? depInfo['FarmToken'] ?? process.env.FARM_TOKEN_ADDRESS;
   if (!FARM_ADDRESS) throw new Error('FARM_TOKEN_ADDRESS not set in deployment file or env');
 
   const USDT_ADDRESS = USDT[network === 'unknown' ? 'bscTestnet' : network];
